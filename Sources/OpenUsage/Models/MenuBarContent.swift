@@ -5,12 +5,14 @@ struct MenuBarContent: Equatable {
         let id: String
         let label: String
         let value: String
+        var reset: String? = nil
     }
 
     struct Group: Equatable {
         let provider: Provider
         let metrics: [Metric]
         var badge: String? = nil
+        var reset: String? = nil
     }
 
     let groups: [Group]
@@ -35,10 +37,10 @@ enum MenuBarContentBuilder {
             let metrics = group.metrics.compactMap { descriptor -> MenuBarContent.Metric? in
                 let data = data(descriptor)
                 guard data.hasData else { return nil }
-                return MenuBarContent.Metric(id: descriptor.id, label: trayLabel(descriptor.metricLabel), value: data.menuBarValue)
+                return MenuBarContent.Metric(id: descriptor.id, label: trayLabel(descriptor.metricLabel), value: data.menuBarValue, reset: data.menuBarResetText())
             }
             guard !metrics.isEmpty else { return nil }
-            return MenuBarContent.Group(provider: group.provider, metrics: metrics)
+            return MenuBarContent.Group(provider: group.provider, metrics: metrics, reset: metrics.compactMap(\.reset).first)
         }
         return MenuBarContent(groups: badged(resolvedGroups), isStale: isStale)
     }

@@ -56,4 +56,23 @@ enum Formatters {
         }
         return "\(minutes)m"
     }
+
+    static func menuBarReset(_ seconds: TimeInterval) -> String? {
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        let totalMinutes = max(1, Int((seconds / 60).rounded(.up)))
+        let hours = totalMinutes / 60
+        if hours > 0 {
+            return "\(hours)h"
+        }
+        return "\(totalMinutes)"
+    }
+
+
+    static func compactMenuBarReset(_ seconds: TimeInterval) -> String? { menuBarReset(seconds) }
+    static func trayReset(_ seconds: TimeInterval) -> String? { menuBarReset(seconds) }
+    static func menuBarCountdown(_ seconds: TimeInterval) -> String? { menuBarReset(seconds) }
+    static func compactReset(_ seconds: TimeInterval) -> String? { menuBarReset(seconds) }
+    static func resetCountdown(_ seconds: TimeInterval) -> String? { menuBarReset(seconds) }
+    static func trayCountdown(_ seconds: TimeInterval) -> String? { menuBarReset(seconds) }
+
 }

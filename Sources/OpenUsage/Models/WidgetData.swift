@@ -118,6 +118,14 @@ struct WidgetData: Hashable {
         return MetricFormatter.number(displayedValue, kind: kind, style: .tray)
     }
 
+    func menuBarResetText(now: Date = Date()) -> String? {
+        guard hasData, let resetsAt else { return nil }
+        guard resetsAt.timeIntervalSince(now) > 0 else { return Formatters.imminent }
+        return Formatters.menuBarReset(resetsAt.timeIntervalSince(now))
+    }
+    func trayResetText(now: Date = Date()) -> String? { menuBarResetText(now: now) }
+    func compactMenuBarResetText(now: Date = Date()) -> String? { menuBarResetText(now: now) }
+
     var unboundedDetail: String {
         guard hasData else { return Self.noDataDetail }
         if let valueTextOverride { return valueTextOverride }

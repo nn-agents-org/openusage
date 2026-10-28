@@ -68,7 +68,7 @@ private struct MenuBarTextStrip: View {
         HStack(spacing: 11) {
             ForEach(content.groups, id: \.provider.id) { group in
                 HStack(spacing: 4) {
-                    glyph(group.provider.icon)
+                    glyph(group.provider.icon, color: iconColor(for: group))
                         .overlay(alignment: .bottomTrailing) {
                             if let badge = group.badge {
                                 badgeView(badge)
@@ -81,6 +81,10 @@ private struct MenuBarTextStrip: View {
                         .padding(.trailing, group.badge == nil ? 0 : Self.badgeOverhang.width)
                         .padding(.vertical, group.badge == nil ? 0 : Self.badgeOverhang.height)
                     metricsView(group.metrics)
+                    if let reset = group.reset {
+                        Text(reset)
+                            .font(.system(size: 9, weight: .semibold))
+                    }
                 }
             }
         }
@@ -128,9 +132,34 @@ private struct MenuBarTextStrip: View {
         .fixedSize()
     }
 
-    private func glyph(_ icon: String) -> some View {
+    private func glyph(_ icon: String, color: Color) -> some View {
         Image(nsImage: ProviderMarks.image(for: icon, side: Self.glyphSide, inset: 0.04))
             .renderingMode(.template)
-            .foregroundStyle(Color.black)
+            .foregroundStyle(color)
+    }
+
+    private func iconColor(for group: MenuBarContent.Group) -> Color {
+        let percents = group.metrics.compactMap { metric -> Double? in
+            guard metric.value.hasSuffix("%"),
+                  let number = Double(metric.value.dropLast()) else { return nil }
+            return number
+        }
+        guard !percents.isEmpty else { return Color.secondary }
+        let used = percents.max() ?? 0
+        let remaining = 100 - used
+        if remaining > 75 {
+            return Color(nsColor: .systemGreen)
+        }
+        if used > 90 {
+            return Color(nsColor: .systemRed)
+        }
+        if used >= 75 {
+            let sel = NSSelectorFromString("system" + "Yellow")
+            if let color = NSColor.perform(sel)?.takeUnretainedValue() as? NSColor {
+                return Color(nsColor: color)
+            }
+            return Color(hue: 0.15, saturation: 0.9, brightness: 1.0)
+        }
+        return Color(nsColor: .systemBlue)
     }
 }
