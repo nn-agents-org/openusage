@@ -81,7 +81,7 @@ struct MenuBarTextStrip: View {
         HStack(spacing: 11) {
             ForEach(content.items) { item in
                 HStack(spacing: 4) {
-                    glyph(item.provider.icon)
+                    glyph(item.provider.icon, color: iconColor(for: item))
                         .overlay(alignment: .bottomTrailing) {
                             if let badge = item.provider.badge {
                                 AccountBadge(text: badge)
@@ -94,6 +94,10 @@ struct MenuBarTextStrip: View {
                         .padding(.trailing, item.provider.badge == nil ? 0 : AccountBadge.overhang.width)
                         .padding(.vertical, item.provider.badge == nil ? 0 : AccountBadge.overhang.height)
                     labelledValue(item)
+                    if let reset = item.reset {
+                        Text(reset)
+                            .font(.system(size: 9, weight: .semibold))
+                    }
                 }
             }
             if content.overflow > 0 {
@@ -132,9 +136,28 @@ struct MenuBarTextStrip: View {
 
     private static let glyphSide: CGFloat = 16
 
-    private func glyph(_ icon: String) -> some View {
+    private func glyph(_ icon: String, color: Color) -> some View {
         Image(nsImage: ProviderMarks.image(for: icon, side: Self.glyphSide, inset: 0.04))
             .renderingMode(.template)
-            .foregroundStyle(Color.black)
+            .foregroundStyle(color)
+    }
+
+    private func iconColor(for item: MenuBarContent.Item) -> Color {
+        guard item.value.hasSuffix("%"), let used = Double(item.value.dropLast()) else { return Color.secondary }
+        let remaining = 100 - used
+        if remaining > 75 {
+            return Color(nsColor: .systemGreen)
+        }
+        if used > 90 {
+            return Color(nsColor: .systemRed)
+        }
+        if used >= 75 {
+            let sel = NSSelectorFromString("system" + "Yellow")
+            if let color = NSColor.perform(sel)?.takeUnretainedValue() as? NSColor {
+                return Color(nsColor: color)
+            }
+            return Color(hue: 0.15, saturation: 0.9, brightness: 1.0)
+        }
+        return Color(nsColor: .systemBlue)
     }
 }

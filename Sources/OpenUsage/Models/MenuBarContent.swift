@@ -7,6 +7,7 @@ struct MenuBarContent: Equatable {
         let label: String
         let shortLabel: String
         let value: String
+        var reset: String? = nil
     }
 
     let items: [Item]
@@ -41,7 +42,8 @@ enum MenuBarContentBuilder {
                 provider: provider,
                 label: label,
                 shortLabel: shortLabel(label),
-                value: line.data.menuBarValue
+                value: line.data.menuBarValue,
+                reset: line.data.menuBarResetText()
             )
         }
         return MenuBarContent(items: shown, overflow: max(0, counted.count - shown.count))

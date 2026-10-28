@@ -109,6 +109,14 @@ struct WidgetData: Hashable {
         return MetricFormatter.number(displayedValue, kind: kind, style: .tray, currencyCode: currencyCode)
     }
 
+    func menuBarResetText(now: Date = Date()) -> String? {
+        guard hasData, let resetsAt else { return nil }
+        guard resetsAt.timeIntervalSince(now) > 0 else { return Formatters.imminent }
+        return Formatters.menuBarReset(resetsAt.timeIntervalSince(now))
+    }
+    func trayResetText(now: Date = Date()) -> String? { menuBarResetText(now: now) }
+    func compactMenuBarResetText(now: Date = Date()) -> String? { menuBarResetText(now: now) }
+
     var unboundedDetail: String {
         unboundedFigures.joined(separator: " · ")
     }
