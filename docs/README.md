@@ -20,3 +20,7 @@ with the behaviour they describe. If the app and a page here disagree, that is a
 - [Architecture](architecture.md): the composition root, the stores, the account runtime, the AppKit bridge
 - [Adding a provider](adding-a-provider.md): the sign-in and usage contract, and the register, test, document steps
 - [Debugging](debugging.md): running a local build and reading its logs
+
+## Fork Change Requests
+
+- [CR-01](CR-01-menu-bar-and-idle-session-handling.md): Menu bar agent visuals, multi-row reset countdowns & 5-hour idle session detection

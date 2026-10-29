@@ -43,7 +43,40 @@ final class ResetDisplayTests: XCTestCase {
         XCTAssertEqual(data.dashboardRow(now: now).mark, .bar(fill: 0, severity: .normal, value: "0%", reset: nil))
         XCTAssertEqual(data.meterState(now: now), .level(.normal))
 
-        XCTAssertFalse(data.isFreshSessionWindow(now: data.resetsAt!.addingTimeInterval(1)))
+        XCTAssertTrue(data.isFreshSessionWindow(now: data.resetsAt!.addingTimeInterval(1)))
+        var activeData = WidgetData(title: "Session", kind: .percent, used: 1, limit: 100)
+        activeData.sessionStartSignal = .zeroUsage
+        XCTAssertFalse(activeData.isFreshSessionWindow(now: now))
+    }
+
+    func testMenuBarResetFormatting() {
+        XCTAssertEqual(Formatters.menuBarReset(108 * 3600), "4d")
+        XCTAssertEqual(Formatters.menuBarReset(24 * 3600), "1d")
+        XCTAssertEqual(Formatters.menuBarReset(23 * 3600), "23h")
+        XCTAssertEqual(Formatters.menuBarReset(5 * 3600), "5h")
+        XCTAssertEqual(Formatters.menuBarReset(3600), "1h")
+        XCTAssertEqual(Formatters.menuBarReset(45 * 60), "45m")
+        XCTAssertEqual(Formatters.menuBarReset(60), "1m")
+        XCTAssertEqual(Formatters.menuBarReset(20), "1m")
+        XCTAssertNil(Formatters.menuBarReset(0))
+        XCTAssertNil(Formatters.menuBarReset(-10))
+    }
+
+    func testMenuBarResetSuppressedOnFreshSessionWindow() {
+        var session = WidgetData(title: "Session", kind: .percent, used: 0, limit: 100)
+        session.sessionStartSignal = .zeroUsage
+        session.resetsAt = now.addingTimeInterval(5 * 3600)
+
+        XCTAssertNil(session.menuBarResetText(now: now))
+
+        var activeSession = WidgetData(title: "Session", kind: .percent, used: 10, limit: 100)
+        activeSession.sessionStartSignal = .zeroUsage
+        activeSession.resetsAt = now.addingTimeInterval(5 * 3600)
+        XCTAssertEqual(activeSession.menuBarResetText(now: now), "5h")
+
+        var weekly = WidgetData(title: "Weekly", kind: .percent, used: 0, limit: 100)
+        weekly.resetsAt = now.addingTimeInterval(108 * 3600)
+        XCTAssertEqual(weekly.menuBarResetText(now: now), "4d")
     }
 
     func testMissingResetDateSignalKeepsCountdownForSubOnePercentSession() {

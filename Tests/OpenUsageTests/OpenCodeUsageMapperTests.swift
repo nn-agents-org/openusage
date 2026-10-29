@@ -98,6 +98,24 @@ final class OpenCodeUsageMapperTests: XCTestCase {
         }
     }
 
+    func testExpiredRollingWindowWithZeroUsageDropsReset() throws {
+        let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let expired = capturedAt.addingTimeInterval(-60)
+        let body: [String: Any] = [
+            "usage": [
+                "rolling": ["percent": 0, "resetsAt": OpenUsageISO8601.string(from: expired)],
+                "weekly": ["percent": 1, "resetsAt": OpenUsageISO8601.string(from: capturedAt.addingTimeInterval(3 * 86_400))],
+                "monthly": ["percent": 0, "resetsAt": OpenUsageISO8601.string(from: capturedAt.addingTimeInterval(20 * 86_400))]
+            ]
+        ]
+        let lines = try OpenCodeUsageMapper.meterLines(body: body, capturedAt: capturedAt)
+        guard case let .progress(_, used, _, _, resetsAt, _) = lines[0] else {
+            return XCTFail("session is not a progress line")
+        }
+        XCTAssertEqual(used, 0)
+        XCTAssertNil(resetsAt)
+    }
+
     func testPlaceholderComparisonIsBoundedOnBothSides() throws {
         let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
         let period = TimeInterval(MetricPeriod.sessionMs) / 1000

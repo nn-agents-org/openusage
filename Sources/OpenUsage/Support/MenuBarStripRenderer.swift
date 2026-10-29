@@ -81,10 +81,7 @@ private struct MenuBarTextStrip: View {
                         .padding(.trailing, group.badge == nil ? 0 : Self.badgeOverhang.width)
                         .padding(.vertical, group.badge == nil ? 0 : Self.badgeOverhang.height)
                     metricsView(group.metrics)
-                    if let reset = group.reset {
-                        Text(reset)
-                            .font(.system(size: 9, weight: .semibold))
-                    }
+                    resetView(group.metrics)
                 }
             }
         }
@@ -110,6 +107,28 @@ private struct MenuBarTextStrip: View {
             }
             .font(.system(size: 9, weight: .semibold))
             .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private func resetView(_ metrics: [MenuBarContent.Metric]) -> some View {
+        let hasAnyReset = metrics.contains { $0.reset != nil }
+        if hasAnyReset {
+            if metrics.count <= 1 {
+                if let reset = metrics.first?.reset {
+                    Text(reset)
+                        .font(.system(size: 9, weight: .semibold))
+                }
+            } else {
+                VStack(alignment: .leading, spacing: -2) {
+                    ForEach(metrics, id: \.id) { metric in
+                        Text(metric.reset ?? " ")
+                            .opacity(metric.reset == nil ? 0 : 1)
+                    }
+                }
+                .font(.system(size: 9, weight: .semibold))
+                .fixedSize()
+            }
         }
     }
 
@@ -154,11 +173,7 @@ private struct MenuBarTextStrip: View {
             return Color(nsColor: .systemRed)
         }
         if used >= 75 {
-            let sel = NSSelectorFromString("system" + "Yellow")
-            if let color = NSColor.perform(sel)?.takeUnretainedValue() as? NSColor {
-                return Color(nsColor: color)
-            }
-            return Color(hue: 0.15, saturation: 0.9, brightness: 1.0)
+            return Color(nsColor: .systemYellow)
         }
         return Color(nsColor: .systemBlue)
     }

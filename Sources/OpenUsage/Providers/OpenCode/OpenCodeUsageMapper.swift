@@ -69,7 +69,7 @@ enum OpenCodeUsageMapper {
         if dropsPlaceholderReset, used == 0 {
             let period = TimeInterval(periodMs) / 1000
             let distanceFromFullPeriod = abs(reportedReset.timeIntervalSince(capturedAt) - period)
-            if distanceFromFullPeriod <= placeholderResetTolerance {
+            if distanceFromFullPeriod <= placeholderResetTolerance || reportedReset <= capturedAt {
                 resetsAt = nil
             }
         }

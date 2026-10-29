@@ -61,10 +61,14 @@ enum Formatters {
         guard seconds.isFinite, seconds > 0 else { return nil }
         let totalMinutes = max(1, Int((seconds / 60).rounded(.up)))
         let hours = totalMinutes / 60
-        if hours > 0 {
+        let days = hours / 24
+        if days >= 1 {
+            return "\(days)d"
+        }
+        if hours >= 1 {
             return "\(hours)h"
         }
-        return "\(totalMinutes)"
+        return "\(totalMinutes)m"
     }
 
 

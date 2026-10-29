@@ -26,13 +26,13 @@ extension AccountProviderRuntime {
             ]
         case .codex:
             [
-                .percent(key: "session", provider: provider, title: "Session")
+                .percent(key: "session", provider: provider, title: "Session", sessionStartSignal: .zeroUsage)
                     .exportingLimit("session", unit: "percent")
                     .pinnedByDefault(),
                 .percent(key: "weekly", provider: provider, title: "Weekly")
                     .exportingLimit("weekly", unit: "percent")
                     .pinnedByDefault(),
-                .percent(key: "spark", provider: provider, title: "Spark")
+                .percent(key: "spark", provider: provider, title: "Spark", sessionStartSignal: .zeroUsage)
                     .exportingLimit("spark", unit: "percent"),
                 .percent(key: "sparkWeekly", provider: provider, title: "Spark Weekly")
                     .exportingLimit("sparkWeekly", unit: "percent"),

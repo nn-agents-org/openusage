@@ -119,7 +119,7 @@ struct WidgetData: Hashable {
     }
 
     func menuBarResetText(now: Date = Date()) -> String? {
-        guard hasData, let resetsAt else { return nil }
+        guard hasData, let resetsAt, !isFreshSessionWindow(now: now) else { return nil }
         guard resetsAt.timeIntervalSince(now) > 0 else { return Formatters.imminent }
         return Formatters.menuBarReset(resetsAt.timeIntervalSince(now))
     }
@@ -220,8 +220,7 @@ extension WidgetData {
         guard let signal = sessionStartSignal, hasData, limit != nil, used <= 0 else { return false }
         switch signal {
         case .zeroUsage:
-            guard let resetsAt else { return false }
-            return now < resetsAt
+            return true
         case .missingResetDate:
             return resetsAt == nil
         }
