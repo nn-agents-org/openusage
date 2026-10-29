@@ -152,11 +152,7 @@ struct MenuBarTextStrip: View {
             return Color(nsColor: .systemRed)
         }
         if used >= 75 {
-            let sel = NSSelectorFromString("system" + "Yellow")
-            if let color = NSColor.perform(sel)?.takeUnretainedValue() as? NSColor {
-                return Color(nsColor: color)
-            }
-            return Color(hue: 0.15, saturation: 0.9, brightness: 1.0)
+            return Color(nsColor: .systemYellow)
         }
         return Color(nsColor: .systemBlue)
     }

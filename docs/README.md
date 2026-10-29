@@ -22,3 +22,7 @@ How the app behaves. If the app and a page here disagree, that is a bug.
 - [Architecture](architecture.md): the composition root, the stores, the account runtime, the AppKit bridge
 - [Adding a provider](adding-a-provider.md): the sign-in and usage contract, and the steps to add one
 - [Debugging](debugging.md): running a local build and reading its logs
+
+## Fork Change Requests
+
+- [CR-01](CR-01-menu-bar-and-idle-session-handling.md): Menu bar agent visuals, multi-row reset countdowns & 5-hour idle session detection
