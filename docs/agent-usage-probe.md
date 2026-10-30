@@ -7,7 +7,7 @@ OpenUsage's providers (see `Sources/OpenUsage/Providers/...`); OpenUsage's own
 
 ## Output
 
-Default (all providers):
+Default output (short list):
 
 ```json
 {

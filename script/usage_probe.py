@@ -301,7 +301,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pick", action="store_true")
     ap.add_argument("--threshold", type=float, default=5.0)
-    ap.add_argument("--models", action="store_true", help="print sorted JSON array of {provider,model,limit_left,limit_reset_in_sec}")
+    ap.add_argument("--models", action="store_true", help="alias for default short output")
+    ap.add_argument("--raw", action="store_true", help="print full provider details")
     args = ap.parse_args()
 
     results = []
@@ -348,19 +349,18 @@ def main():
     eligible = [r for r in results if r.get("remaining_percent") is not None and r["remaining_percent"] >= args.threshold]
     recommended = max(eligible, key=lambda r: r["remaining_percent"])["provider"] if eligible else None
 
-    if args.models:
+    if args.raw:
+        out = {
+            "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "threshold_percent": args.threshold,
+            "providers": {r["provider"]: r for r in results},
+            "models": all_entries,
+            "recommended": recommended,
+            "errors": [r["provider"] for r in results if r["status"] not in (200,201)],
+        }
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+    else:
         print(json.dumps(all_entries, indent=2, ensure_ascii=False))
-        return
-
-    out = {
-        "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "threshold_percent": args.threshold,
-        "providers": {r["provider"]: r for r in results},
-        "models": all_entries,
-        "recommended": recommended,
-        "errors": [r["provider"] for r in results if r["status"] not in (200,201)],
-    }
-    print(json.dumps(out, indent=2, ensure_ascii=False))
     if args.pick:
         print("RECOMMENDED=" + (recommended or "NONE"), file=sys.stderr)
 
