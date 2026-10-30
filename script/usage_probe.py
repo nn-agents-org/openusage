@@ -82,7 +82,7 @@ def antigravity_token():
         if not p: continue
         d = load_json(p)
         if d:
-            t = d.get("tokens") or d.get("oauth") or d
+            t = d.get("token") or d.get("tokens") or d.get("oauth") or d
             at = t.get("access_token") or t.get("accessToken")
             rt = t.get("refresh_token") or t.get("refreshToken")
             if at: return at, rt
