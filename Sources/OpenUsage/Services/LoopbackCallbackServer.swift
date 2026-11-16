@@ -17,7 +17,8 @@ final class LoopbackCallbackServer: @unchecked Sendable {
         self.path = path
     }
 
-    static func start(state: String, port: UInt16? = nil, path: String = "/callback") async throws -> LoopbackCallbackServer {
+    /// `redirectHost` names the loopback address in the redirect URI. Some providers accept only one spelling.
+    static func start(state: String, port: UInt16? = nil, path: String = "/callback", redirectHost: String = "localhost") async throws -> LoopbackCallbackServer {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(
             host: .ipv4(.loopback),
@@ -35,7 +36,7 @@ final class LoopbackCallbackServer: @unchecked Sendable {
                         continuation.resume(throwing: LoginError.listenerFailed("No local port was assigned."))
                         return
                     }
-                    server.redirectURI = "http://localhost:\(port)\(path)"
+                    server.redirectURI = "http://\(redirectHost):\(port)\(path)"
                     continuation.resume()
                 case .failed(let error):
                     listener.stateUpdateHandler = nil
@@ -95,17 +96,17 @@ final class LoopbackCallbackServer: @unchecked Sendable {
         guard let line = request.components(separatedBy: "\r\n").first,
               let target = line.split(separator: " ").dropFirst().first,
               line.hasPrefix("GET ") else {
-            reply(connection, status: 405, body: "Only GET is supported.", result: .failure(LoginError.invalidCallback))
+            reply(connection, status: 405, body: "Only GET is supported.")
             return
         }
         guard let url = URL(string: "http://localhost\(target)"), url.path == path else {
-            reply(connection, status: 404, body: "Sign-in callback not found.", result: .failure(LoginError.invalidCallback))
+            reply(connection, status: 404, body: "Sign-in callback not found.")
             return
         }
         let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         let value = { (name: String) in query.first { $0.name == name }?.value }
         guard value("state") == state else {
-            reply(connection, status: 400, body: "Sign-in state did not match.", result: .failure(LoginError.invalidState))
+            reply(connection, status: 400, body: "Sign-in state did not match.")
             return
         }
         if let error = value("error") {
@@ -119,15 +120,15 @@ final class LoopbackCallbackServer: @unchecked Sendable {
         reply(connection, status: 200, body: "Sign-in complete. You may close this page.", result: .success(code))
     }
 
-    private func reply(_ connection: NWConnection, status: Int, body: String, result: Result<String, Error>) {
-        finish(result)
+    private func reply(_ connection: NWConnection, status: Int, body: String, result: Result<String, Error>? = nil) {
+        if let result { finish(result) }
         let bodyData = Data("<!doctype html><title>OpenUsage</title><p>\(body)</p>".utf8)
         let response = Data(
             "HTTP/1.1 \(status) \(status == 200 ? "OK" : "Error")\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(bodyData.count)\r\nConnection: close\r\n\r\n".utf8
         ) + bodyData
         connection.send(content: response, completion: .contentProcessed { [listener] _ in
             connection.cancel()
-            listener.cancel()
+            if result != nil { listener.cancel() }
         })
     }
 

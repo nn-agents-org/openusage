@@ -21,11 +21,10 @@ enum OllamaUsageMapper {
         if let monthly = monthlyLine(included) {
             lines.append(monthly)
         }
-        guard !lines.isEmpty else { throw ProviderError.invalidResponse }
-
         if let purchased = purchasedLine(root["purchased"]) {
             lines.append(purchased)
         }
+        guard !lines.isEmpty else { throw ProviderError.invalidResponse }
         return lines
     }
 
@@ -39,6 +38,13 @@ enum OllamaUsageMapper {
               let name = text.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         else { return nil }
         return name.capitalized
+    }
+
+    static func email(from body: Data) -> String? {
+        guard let root = ProviderParse.jsonObject(body),
+              let text = (root["Email"] ?? root["email"]) as? String
+        else { return nil }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
 
     private static func legacyLine(_ entry: Any?, label: String, periodMs: Int) -> MetricLine? {

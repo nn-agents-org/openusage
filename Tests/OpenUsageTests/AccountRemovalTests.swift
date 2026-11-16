@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import XCTest
 @testable import OpenUsage
 
@@ -46,43 +47,16 @@ final class AccountRemovalTests: XCTestCase {
         XCTAssertTrue(container.layout.displayGroups.isEmpty)
     }
 
-    func testTheVaultOnlyUpdatesAnExistingCredential() throws {
-        let vault = InMemoryCredentialVault()
-        let id = UUID()
+    func testAFailedRemovalKeepsTheAccountAndExplainsTheKeychainError() throws {
+        let vault = FailingVault()
+        vault.deleteError.value = KeychainVaultError.status(errSecInteractionNotAllowed)
+        let accounts = AccountStore(defaults: isolatedDefaults(), vault: vault)
+        let account = accounts.add(kind: .ollama, label: "Ollama", credential: .apiKey("key"))
 
-        XCTAssertThrowsError(try vault.update(.apiKey("late"), for: id)) { error in
-            guard case CredentialVaultError.missingCredential = error else { return XCTFail("\(error)") }
-        }
-        XCTAssertNil(try vault.load(id))
+        accounts.remove(account.id)
 
-        try vault.save(.apiKey("first"), for: id)
-        try vault.update(.apiKey("second"), for: id)
-        XCTAssertEqual(try vault.load(id), .apiKey("second"))
-    }
-}
-
-private actor HeldResponse {
-    private var released = false
-    private var held: [CheckedContinuation<Void, Never>] = []
-    private var arrived = false
-    private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
-
-    func hold() async {
-        arrived = true
-        for waiter in arrivalWaiters { waiter.resume() }
-        arrivalWaiters = []
-        guard !released else { return }
-        await withCheckedContinuation { held.append($0) }
-    }
-
-    func waitUntilHeld() async {
-        guard !arrived else { return }
-        await withCheckedContinuation { arrivalWaiters.append($0) }
-    }
-
-    func release() {
-        released = true
-        for continuation in held { continuation.resume() }
-        held = []
+        XCTAssertEqual(accounts.accounts.map(\.id), [account.id])
+        let keychainReason = try XCTUnwrap(SecCopyErrorMessageString(errSecInteractionNotAllowed, nil) as String?)
+        XCTAssertEqual(accounts.lastError, "OpenUsage couldn't use its Keychain item for this account (\(keychainReason)).")
     }
 }

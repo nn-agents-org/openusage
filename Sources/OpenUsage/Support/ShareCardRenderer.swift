@@ -18,10 +18,16 @@ enum ShareCardRenderer {
     static func share(
         family: DashboardFamily,
         plans: [String: String],
-        appearance: ColorScheme
+        appearance: ColorScheme,
+        blursAccountNames: Bool
     ) -> Bool {
-        guard let png = png(for: ShareCardView(family: family, plans: plans, appearance: appearance)) else {
-            AppLog.error(.lifecycle, "share card: failed to render a PNG for \(family.id)")
+        copy(ShareCardView(family: family, plans: plans, appearance: appearance, blursAccountNames: blursAccountNames), named: family.id)
+    }
+
+    @discardableResult
+    static func copy<Card: View>(_ card: Card, named name: String) -> Bool {
+        guard let png = png(for: card) else {
+            AppLog.error(.lifecycle, "share card: failed to render a PNG for \(name)")
             NSSound.beep()
             return false
         }

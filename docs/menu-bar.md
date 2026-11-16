@@ -1,35 +1,24 @@
 # Menu bar
 
-Star the metrics you watch most and they show in the menu bar strip.
+The strip shows the limits closest to running out, or with Always Show In Menu Bar everything
+Priority lists.
 
-## Right-clicking the icon
-
-Right-click (or control-click) the menu bar icon for a short menu with **Settings** and **Quit**.
-Left-click opens the panel.
-
-## Starring
-
-Star a metric from its right-click menu on the dashboard, or with the star on its row on an account's
-page in Accounts.
-
-- Each provider ships with default stars (for example Claude Session and Weekly, ChatGPT Session and
-  Weekly, Cursor Models and Other Models, OpenRouter Balance), so the strip shows numbers as soon as
-  an account refreshes. Change them any time.
-- At most **two stars per provider**.
-- When a star is not allowed, the star stays clickable. Clicking it shows the reason in a short pill.
-- Hiding a metric takes its star off the menu bar. Starring a hidden metric shows it again.
-
-## What the strip shows
-
-Each starred metric shows its provider's mark and the value. Two starred metrics from the same
-account stack as a labelled pair. The strip only renders real data: a starred metric with nothing
-fetched yet is skipped, and an account whose stars all lack data disappears from the strip. When
-nothing has data, the strip shows the app icon. The strip, or the app icon in its place, dims while an
-account's values are out of date because its refreshes fail or a provider asked OpenUsage to wait (see
-[Refreshing](refreshing.md)), and VoiceOver adds "waiting for a provider".
-
-When the strip shows more than one account of a provider, each mark carries the account name's
-initials: the first letter of its first word and of its last, so "Personal" reads P and "Attention
-Machine 1" reads A1. Two accounts named alike share a tag; rename one to tell them apart.
-
-Stars follow your dashboard order.
+- Left-click the icon to open the panel. Right-click (or control-click) it for **Settings** and
+  **Quit OpenUsage**.
+- The strip shows the limits [running out](dashboard.md#priority), most urgent first, pinned or not,
+  up to **Settings → Display → Menu Bar Icons → Max Items In Menu Bar** (3 by default).
+- With **Always Show In Menu Bar** on (off by default), it lists everything Priority does, in its
+  order: Pinned, Running Out, Use It or Lose It, then Used Up. A pinned limit shows once, where
+  Priority lists it.
+- Each limit shows the provider's mark, a short name, and its value. An account can appear more than once.
+- Limits past that number show as a count, like `+7`. Used Up limits never count. With Always Show
+  In Menu Bar off, only limits running out show or count.
+- With nothing to show, or with **App Icon Only**, the strip shows the app icon.
+- With [Privacy Mode](privacy.md#privacy-mode) on, it shows the app icon while your screen
+  is shared or recorded.
+- When an [update](updates.md) is available, the app icon shows at the end of the strip until the
+  update banner goes away.
+- When a provider has more than one account, its mark carries the account name's initials: "Personal"
+  reads P and "Attention Machine 1" reads A1. Rename one of two accounts with the same initials to tell
+  them apart. A provider with [Unify Multiple Accounts](dashboard.md#unify-multiple-accounts) on shows
+  each limit once, with no initials.

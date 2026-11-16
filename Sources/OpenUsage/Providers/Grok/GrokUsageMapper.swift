@@ -4,7 +4,7 @@ enum GrokUsageMapper {
     static func mapCreditsConfig(_ response: HTTPResponse) throws -> ProviderUsage {
         if response.statusCode == 412,
            (ProviderParse.jsonObject(response.body)?["error"] as? String)?.localizedCaseInsensitiveContains("no personal team") == true {
-            throw ProviderError.unavailable("Grok team accounts have no personal quota.")
+            return ProviderUsage(lines: [], notice: "Grok team accounts have no personal quota.")
         }
         try ProviderError.requireSuccess(response, kind: .grok)
         let config = try GrokCreditsConfigDecoder.decode(responseBody: response.body)
@@ -14,10 +14,10 @@ enum GrokUsageMapper {
             let used = ProviderParse.clampPercent(config.usedPercent)
             lines.append(.percent("Weekly limit", used, resetsAt: config.periodEnd, periodMs: config.periodDurationMs))
         }
-        lines.append(.badge(
-            label: "Pay as you go",
-            text: config.onDemandCap > 0 ? "\(formatUnits(config.onDemandCap)) cap" : "Disabled"
-        ))
+        if config.onDemandCap > 0 {
+            let cap = MetricFormatter.number(ProviderParse.centsToDollars(config.onDemandCap), kind: .dollars, style: .row)
+            lines.append(.badge(label: "Pay as you go", text: "\(cap) cap"))
+        }
         return ProviderUsage(lines: lines)
     }
 
@@ -30,12 +30,5 @@ enum GrokUsageMapper {
         }
         let trimmed = plan.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private static func formatUnits(_ value: Double) -> String {
-        if value.rounded() == value {
-            return String(Int(value))
-        }
-        return String(value)
     }
 }

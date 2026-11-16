@@ -6,7 +6,6 @@ final class ResetClaimServiceTests: XCTestCase {
     @MainActor
     private final class Recorder {
         var refreshes = 0
-        var pauses: [Duration] = []
     }
 
     private func makeService(
@@ -17,19 +16,16 @@ final class ResetClaimServiceTests: XCTestCase {
     ) -> ResetClaimService {
         ResetClaimService(
             accountID: "codex@test",
-            isClaimable: true,
-            confirmDetail: nil,
+            items: [],
             claimReset: { _, _ in outcome },
             refreshAccount: {
                 defer { recorder.refreshes += 1; refreshed.fulfill() }
                 return refreshOutcomes[min(recorder.refreshes, refreshOutcomes.count - 1)]
-            },
-            refreshDelay: .seconds(5),
-            pause: { recorder.pauses.append($0) }
+            }
         )
     }
 
-    func testClaimRefreshesTheAccountAfterTheDelayUnlessItFailed() async {
+    func testClaimRefreshesTheAccountUnlessItFailed() async {
         let outcomes: [ResetClaimOutcome] = [
             .success, .nothingToReset, .noCredit, .unconfirmed, .unavailableNow(until: nil), .failed(.connection)
         ]
@@ -40,12 +36,11 @@ final class ResetClaimServiceTests: XCTestCase {
             refreshed.isInverted = failed
             let service = makeService(outcome: outcome, recorder: recorder, refreshed: refreshed)
 
-            let result = await service.claim(creditExpiringAt: Date(), redeemRequestID: "redeem-1")
+            let result = await service.claim(Self.credit(expiringAt: Date()), requestID: "redeem-1")
 
             XCTAssertEqual(result, outcome)
             await fulfillment(of: [refreshed], timeout: failed ? 0.1 : 5)
             XCTAssertEqual(recorder.refreshes, failed ? 0 : 1, "\(outcome)")
-            XCTAssertEqual(recorder.pauses, failed ? [] : [.seconds(5)], "\(outcome)")
         }
     }
 
@@ -55,25 +50,22 @@ final class ResetClaimServiceTests: XCTestCase {
             let refreshed = expectation(description: "the post-claim refresh answering \(refresh)")
             let service = makeService(outcome: .success, refreshOutcomes: [refresh], recorder: recorder, refreshed: refreshed)
 
-            _ = await service.claim(creditExpiringAt: Date(), redeemRequestID: "redeem-1")
+            _ = await service.claim(Self.credit(expiringAt: Date()), requestID: "redeem-1")
 
             await fulfillment(of: [refreshed], timeout: 5)
             XCTAssertEqual(recorder.refreshes, 1, "\(refresh)")
         }
     }
 
-    func testOnlyClaudeAndCodexAccountsGetAClaimService() {
+    func testOnlyClaudeCodexAndZAIAccountsGetAClaimService() {
         for kind in ProviderKind.allCases {
             let runtime = AccountProviderRuntime(account: Account(kind: kind, label: "Work"), vault: InMemoryCredentialVault())
             let service = runtime.resetClaimService { .refreshed }
             switch kind {
-            case .claude:
+            case .claude, .codex, .zai:
                 XCTAssertEqual(service?.accountID, runtime.account.cardID)
-                XCTAssertEqual(service?.isClaimable, false, "nothing to claim before the first reset-grants check")
-            case .codex:
-                XCTAssertEqual(service?.accountID, runtime.account.cardID)
-                XCTAssertEqual(service?.isClaimable, true)
-            case .cursor, .antigravity, .copilot, .grok, .ollama, .opencodeGo, .openrouter, .zai:
+                XCTAssertEqual(service?.items, [], "nothing to list before the first reset read")
+            case .amp, .cursor, .antigravity, .copilot, .devin, .grok, .muse, .ollama, .opencodeGo, .openrouter:
                 XCTAssertNil(service, kind.rawValue)
             }
         }
@@ -98,12 +90,25 @@ final class ResetClaimServiceTests: XCTestCase {
         XCTAssertEqual(refresh, .failed, "the post-claim refresh runs despite the backoff")
     }
 
+    func testChatGPTCreditsListAsFullResetsWhateverTheirType() {
+        let runtime = AccountProviderRuntime(account: Account(kind: .codex, label: "Work"), vault: InMemoryCredentialVault())
+        let expiries = [Date(timeIntervalSince1970: 1_800_000_000), Date(timeIntervalSince1970: 1_800_100_000)]
+        let items = runtime.resetClaimService(expiries: expiries) { .refreshed }?.items ?? []
+        XCTAssertEqual(items.map(\.kind), [.full, .full])
+        XCTAssertEqual(items.map(\.claim), expiries.map(ResetClaimRef.codexCredit))
+        XCTAssertTrue(items.allSatisfy(\.usable))
+    }
+
+    private static func credit(expiringAt expiry: Date) -> ResetItem {
+        ResetItem(kind: .full, expiresAt: expiry, claim: .codexCredit(expiry))
+    }
+
     func testErrorsMapToTheAdviceTheMessageGives() {
         XCTAssertEqual(ResetClaimFailure(ProviderError.signInExpired(.claude)), .signInExpired)
         XCTAssertEqual(ResetClaimFailure(ProviderError.signInExpired(.codex)), .signInExpired)
         XCTAssertEqual(ResetClaimFailure(URLError(.timedOut)), .connection)
         XCTAssertEqual(ResetClaimFailure(ProviderError.connectionFailed), .connection)
-        XCTAssertEqual(ResetClaimFailure(ProviderError.connectionFailed), .connection)
+        XCTAssertEqual(ResetClaimFailure(ProviderError.unreachable("Can't reach the hub.")), .connection)
         XCTAssertEqual(ResetClaimFailure(ProviderError.requestFailed(500)), .refused)
     }
 
@@ -116,8 +121,8 @@ final class ResetClaimServiceTests: XCTestCase {
             (.unconfirmed, "Your reset may still be going through. Check again in a minute."),
             (.unavailableNow(until: nil), "Resets can't be used right now."),
             (.unavailableNow(until: now.addingTimeInterval(90 * 60)), "Resets can't be used right now. Try again in 1h 30m."),
-            (.failed(.signInExpired), "Your sign-in expired. Remove the account and add it again."),
-            (.failed(.notPermitted), "This sign-in can't use resets. Use the reset in Claude Code instead."),
+            (.failed(.signInExpired), "Your sign-in expired. Sign in again from the account's page."),
+            (.failed(.notPermitted), "This sign-in can't use resets. Remove the account and add it again."),
             (.failed(.connection), "Couldn't connect. Check your internet connection and try again."),
             (.failed(.refused), "Couldn't reset usage. Please try again.")
         ]
@@ -126,9 +131,10 @@ final class ResetClaimServiceTests: XCTestCase {
         }
     }
 
-    func testCodexClaimRefreshesTheDashboardPastItsCache() async throws {
+    func testCodexClaimRereadsTheUsageAndTheResetCountAtOnce() async throws {
         let expiry = Date(timeIntervalSince1970: 1_800_000_000)
-        let runtime = try makeCodexRuntime(http: Self.codexHTTP(expiry: expiry, claimed: TestSwitch(false)))
+        let http = Self.codexHTTP(expiry: expiry, claimed: TestSwitch(false))
+        let runtime = try makeCodexRuntime(http: http)
         let defaults = isolatedDefaults()
         let store = WidgetDataStore.forTesting([runtime], defaults: defaults)
         let descriptor = try XCTUnwrap(runtime.widgetDescriptors.first { $0.sample.showsResetExpiries })
@@ -137,15 +143,19 @@ final class ResetClaimServiceTests: XCTestCase {
         XCTAssertEqual(store.data(for: descriptor).expiriesAt, [expiry])
 
         let refreshed = expectation(description: "the post-claim refresh")
-        var service = try XCTUnwrap(runtime.resetClaimService {
+        let service = try XCTUnwrap(runtime.resetClaimService {
             defer { refreshed.fulfill() }
             return await store.refresh(providerID: runtime.provider.id, force: true)
         })
-        service.pause = { _ in }
-        let outcome = await service.claim(creditExpiringAt: expiry, redeemRequestID: "redeem-1")
-        await fulfillment(of: [refreshed], timeout: 5)
+        let sentBefore = http.requests.count
+        let outcome = await service.claim(Self.credit(expiringAt: expiry), requestID: "redeem-1")
+        await fulfillment(of: [refreshed], timeout: 1)
 
         XCTAssertEqual(outcome, .success)
+        XCTAssertEqual(
+            http.requests.dropFirst(sentBefore).map(\.url),
+            [CodexUsageClient.resetCreditsURL, CodexUsageClient.consumeResetCreditURL, CodexUsageClient.usageURL, CodexUsageClient.resetCreditsURL]
+        )
         XCTAssertEqual(store.data(for: descriptor).unboundedDetail, "0 available")
         XCTAssertEqual(store.data(for: descriptor).expiriesAt, [])
     }
@@ -156,23 +166,19 @@ final class ResetClaimServiceTests: XCTestCase {
         let recorder = Recorder()
         let gate = Gate()
         let refreshed = expectation(description: "the post-claim refresh")
-        var service = try XCTUnwrap(runtime.resetClaimService {
+        let service = try XCTUnwrap(runtime.resetClaimService {
+            await gate.wait()
             recorder.refreshes += 1
             refreshed.fulfill()
             return .refreshed
         })
-        service.pause = { delay in
-            recorder.pauses.append(delay)
-            await gate.wait()
-        }
 
-        let outcome = await service.claim(creditExpiringAt: expiry, redeemRequestID: "redeem-1")
+        let outcome = await service.claim(Self.credit(expiringAt: expiry), requestID: "redeem-1")
 
         XCTAssertEqual(outcome, .success)
         XCTAssertEqual(recorder.refreshes, 0, "the claim's result shows before the refresh drops the spent row")
         gate.open()
         await fulfillment(of: [refreshed], timeout: 5)
-        XCTAssertEqual(recorder.pauses, [.seconds(5)])
         XCTAssertEqual(recorder.refreshes, 1)
     }
 

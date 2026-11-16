@@ -5,19 +5,23 @@ import XCTest
 
 @MainActor
 final class InlineRenameFocusTests: QuietWindowTestCase {
+    private final class Frames {
+        var byID: [String: CGRect] = [:]
+    }
+
     private struct Hosted {
         let panel: MenuBarPanel
         let host: NSView
         let container: AppContainer
         let accounts: [String: String]
+        let frames: Frames
     }
 
     func testDoubleClickingAnAccountNameTakesTheKeyboard() async throws {
         let hosted = try await host()
         try await resignKey(hosted)
-        let caption = PanelMetrics.margin + DashboardGrid.headerHeight + DashboardGrid.headerGap
-            + DashboardGrid.cardPadding + DashboardGrid.captionHeight / 2
-        try await doubleClick(CGPoint(x: PanelMetrics.margin + DashboardGrid.cardPadding + DashboardGrid.inset + 10, y: caption), hosted)
+        let personal = try XCTUnwrap(hosted.frames.byID[try XCTUnwrap(hosted.accounts["Personal"])], "All Usage isn't showing")
+        try await doubleClick(CGPoint(x: personal.minX + 10, y: personal.minY + DashboardGrid.captionHeight / 2), hosted)
         try await assertRenameTakesTyping("Personal", hosted)
     }
 
@@ -49,7 +53,7 @@ final class InlineRenameFocusTests: QuietWindowTestCase {
         XCTAssertEqual(editor.selectedRange(), NSRange(location: 0, length: (name as NSString).length), "the whole name isn't selected", line: line)
 
         for character in "Zed" {
-            try await press(String(character), hosted)
+            try await press(String(character))
         }
         XCTAssertEqual(renaming.draft, "Zed", "typing didn't replace the name", line: line)
         renaming.cancel()
@@ -68,8 +72,11 @@ final class InlineRenameFocusTests: QuietWindowTestCase {
             try await Task.sleep(for: .milliseconds(5))
         }
 
-        let hosting = NSHostingController(rootView: AnyView(
+        let frames = Frames()
+        let hosting = NSHostingView(rootView: AnyView(
             DashboardView()
+                .defaultAppStorage(defaults)
+                .onPreferenceChange(ReorderFramePreferenceKey.self) { frames.byID = $0 }
                 .reduceAnimationsWhenRequested()
                 .environment(container)
                 .environment(container.layout)
@@ -85,9 +92,9 @@ final class InlineRenameFocusTests: QuietWindowTestCase {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.appearance = NSAppearance(named: .aqua)
-        panel.contentViewController = hosting
+        panel.host(hosting)
         panel.setFrame(frame, display: false)
-        container.popover.popoverShown = true
+        container.popover.show(dashboardTab: .allUsage)
         panel.makeKeyAndOrderFront(nil)
         addTeardownBlock { panel.close() }
         try await Task.sleep(for: .milliseconds(800))
@@ -96,7 +103,7 @@ final class InlineRenameFocusTests: QuietWindowTestCase {
             container.popover.screen = .accounts
             try await Task.sleep(for: .milliseconds(1200))
         }
-        return Hosted(panel: panel, host: hosting.view, container: container, accounts: accounts)
+        return Hosted(panel: panel, host: hosting, container: container, accounts: accounts, frames: frames)
     }
 
     private func resignKey(_ hosted: Hosted) async throws {
@@ -132,7 +139,7 @@ final class InlineRenameFocusTests: QuietWindowTestCase {
 
     /// A key press as the window server delivers it: to the key window, or nowhere when there is none,
     /// so it reaches the field only when the panel is key.
-    private func press(_ character: String, _ hosted: Hosted) async throws {
+    private func press(_ character: String) async throws {
         guard let keyWindow = NSApp.keyWindow else { return }
         NSApp.sendEvent(NSEvent.keyEvent(
             with: .keyDown,

@@ -1,8 +1,8 @@
 # AGENTS.md
 
 OpenUsage is a SwiftPM-based macOS menu-bar app that shows the usage limits of the AI coding accounts a
-user adds within the app (Claude, Codex, Cursor, Copilot, Antigravity, Grok, Ollama, OpenCode,
-OpenRouter, Z.ai).
+user adds within the app (Claude, Codex, Cursor, Amp, Copilot, Antigravity, Devin, Grok, Muse Code,
+Ollama, OpenCode, OpenRouter, Z.ai).
 
 This file documents the engineering conventions for the project. Read it before contributing.
 
@@ -45,11 +45,14 @@ on `gh-pages`). Cut releases with the release-swift skill.
   or accounts from other tools, and never read their files, Keychain items, SQLite databases, or
   environment variables.
 - Each account has one provider runtime. The runtime calls the provider API and maps its response to
-  dashboard metrics. Do not add log scanning, spend estimates, or external pricing.
+  dashboard metrics. Do not add log scanning, spend estimates, or external pricing; the one exception
+  is ChatGPT's credits, priced at 4¢ each in `CodexUsageMapper`.
 - The dashboard shows provider-supplied limits and dollar values only. Provider and account order is
   the user's saved order; a provider's first account goes to the bottom, and a new account goes to the
   bottom of its provider's accounts, in the order they were added. Never sort providers or accounts by
   catalog order or name.
+- The one exception to provider-supplied values: a unified multi-account row (Unify Multiple Accounts)
+  may average provider percents, at the owner's request.
 - Never rebuild `AppContainer` or the status item on an account change; the account observer swaps
   runtimes in place.
 - See `docs/` for behavior docs and the developer docs (architecture overview, adding a provider).
@@ -61,10 +64,9 @@ Provider sign-in and usage code lives under `Sources/OpenUsage/Providers/<Name>/
 account-scoped refresh. Provider API failures should surface as friendly account-specific errors
 without logging credentials or response bodies. See `docs/adding-a-provider.md`.
 
-**Metric placement defaults:** every metric starts shown. When adding or changing a metric, confirm its
-two defaults with the owner before choosing — never pick silently:
-1. starred into the menu bar (`.pinnedByDefault()` on its descriptor in `widgetDescriptors`),
-2. order (within an account, the `widgetDescriptors` declaration order).
+**Metric order default:** every metric with data shows. When adding or changing a metric, confirm its
+order (within an account, the `widgetDescriptors` declaration order) with the owner before choosing —
+never pick silently.
 
 ## Running / Testing Changes
 
@@ -76,9 +78,11 @@ script/test_quiet.sh [--filter <Suite>]
 
 `script/test_quiet.sh` is the only way to run the tests on a Mac someone is using: the suite hosts real
 windows, and the script runs it niced, keeps it from taking the keyboard or the screen, and fails the
-run if a test process ever came to the front. The rename-focus tests need a key window, so they skip
-unless `OPENUSAGE_FOCUS_TESTS=1`; run them with `swift test --filter InlineRenameFocusTests` on a Mac
-nobody is typing on after every change to a header or to renaming, or they rot unseen.
+run if a test process ever came to the front. The rename-focus tests need a key window, and the Options
+menu and metric menu tests show real menus, so they skip unless `OPENUSAGE_FOCUS_TESTS=1`; run them with
+`OPENUSAGE_FOCUS_TESTS=1 swift test --filter 'InlineRenameFocusTests|UpdateControlsTests|MetricPinMenuTests'`
+on a Mac nobody is typing on after every change to a header, to renaming, to the Options menu, or to a
+metric's right-click menu, or they rot unseen.
 
 There is no hot reload. The app is a long-lived menu-bar process, so **every code change requires a
 full rebuild and restart of the running app** to take effect. The development bundle identifier is

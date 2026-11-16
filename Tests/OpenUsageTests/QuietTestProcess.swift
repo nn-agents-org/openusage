@@ -101,11 +101,11 @@ class QuietWindowTestCase: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        if !QuietTestProcess.focusTestsRequested { QuietTestProcess.startSampling() }
+        if !QuietTestProcess.focusTestsRequested { MainActor.assumeIsolated { QuietTestProcess.startSampling() } }
     }
 
     override func tearDown() {
-        if !QuietTestProcess.focusTestsRequested, let taken = QuietTestProcess.stopSampling() {
+        if !QuietTestProcess.focusTestsRequested, let taken = MainActor.assumeIsolated({ QuietTestProcess.stopSampling() }) {
             XCTFail("the test \(taken), which takes the keyboard from whoever is typing")
         }
         super.tearDown()
@@ -116,6 +116,23 @@ enum QuietHost {
     case panel
     case titled
     case borderless
+}
+
+@MainActor
+extension XCTestCase {
+    func waitUntil(
+        timeout: Duration = .seconds(2), _ condition: @MainActor () -> Bool,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !condition() {
+            guard ContinuousClock.now < deadline else {
+                XCTFail("Timed out waiting", file: file, line: line)
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
 }
 
 @MainActor

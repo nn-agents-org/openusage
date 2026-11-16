@@ -1,27 +1,36 @@
 import Foundation
 
 enum PaceMilestone: String, CaseIterable, Hashable, Sendable {
-    case underTenPercent
-    case healthyToClose
-    case closeToRunningOut
+    /// These keep their old raw values, so a saved switch stays on or off through the renames.
+    case critical = "underTenPercent"
+    case warning = "healthyToClose"
+    case burningFast = "closeToRunningOut"
+    case useItOrLoseIt
 }
 
 extension PaceMilestone {
     var settingKey: String { "openusage.notifications.\(rawValue)" }
 
+    /// The two levels follow what's left, the same rule as Priority. Only this one follows the pace.
+    var isPace: Bool { self == .burningFast }
+
+    var isLevel: Bool { self == .critical || self == .warning }
+
     var notificationTitle: String {
         switch self {
-        case .underTenPercent: return "Almost Out"
-        case .healthyToClose: return "Cutting It Close"
-        case .closeToRunningOut: return "Will Run Out"
+        case .critical: return "Critical"
+        case .warning: return "Warning"
+        case .burningFast: return "Burning Fast"
+        case .useItOrLoseIt: return "Use It or Lose It"
         }
     }
 
-    var body: String {
+    func body(_ limits: PriorityLimits) -> String {
         switch self {
-        case .underTenPercent: return "Under 10% usage remaining for this window."
-        case .healthyToClose: return "Projected to finish close to your limit."
-        case .closeToRunningOut: return "Projected to finish before the limit resets."
+        case .critical: return "\(limits.critical)% or less left for this window."
+        case .warning: return "\(limits.warning)% or less left for this window."
+        case .burningFast: return "May run out before the limit resets."
+        case .useItOrLoseIt: return "Over 50% left, resets in under 24 hours."
         }
     }
 }
@@ -39,7 +48,7 @@ struct NotificationState: Equatable, Sendable {
     var resetsAt: Date?
     var firedMilestones: Set<PaceMilestone> = []
     var previousBucket: PaceBucket = .untracked
-    var wasUnderTenPercent: Bool = false
+    var previousSeverity: WidgetData.MeterSeverity = .normal
     var primed: Bool = false
 }
 
@@ -51,7 +60,7 @@ enum PaceNotificationLogic {
 
     static func bucket(for state: WidgetData.MeterState) -> PaceBucket {
         switch state {
-        case .noData, .level: return .untracked
+        case .noData, .unpaced: return .untracked
         case .healthy: return .healthy
         case .closeToLimit: return .close
         case .runningOut, .spent: return .runningOut
@@ -60,11 +69,13 @@ enum PaceNotificationLogic {
 
     static func transitions(
         state: WidgetData.MeterState,
-        fraction: Double,
+        severity: WidgetData.MeterSeverity,
         resetsAt: Date?,
-        previous: NotificationState
+        unusedNearReset: Bool,
+        previous: NotificationState,
+        now: Date
     ) -> Transition {
-        var next = carriedOver(previous, resetsAt: resetsAt)
+        var next = carriedOver(previous, resetsAt: resetsAt, now: now)
         let currentBucket = bucket(for: state)
 
         if state == .noData {
@@ -74,8 +85,8 @@ enum PaceNotificationLogic {
         if !next.primed {
             next.primed = true
             next.previousBucket = currentBucket
-            next.wasUnderTenPercent = fraction < 0.10
-            next.firedMilestones = []
+            next.previousSeverity = severity
+            next.firedMilestones = unusedNearReset ? [.useItOrLoseIt] : []
             return Transition(fire: [], newState: next)
         }
 
@@ -86,41 +97,52 @@ enum PaceNotificationLogic {
 
         if currentBucket != .untracked {
             let previousBucket = next.previousBucket
-            if currentBucket == .close, previousBucket < .close { candidate(.healthyToClose) }
-            if currentBucket >= .runningOut, previousBucket < .runningOut { candidate(.closeToRunningOut) }
-            if currentBucket < previousBucket {
-                if currentBucket <= .healthy { next.firedMilestones.remove(.healthyToClose) }
-                if currentBucket <= .close { next.firedMilestones.remove(.closeToRunningOut) }
-            }
+            if currentBucket >= .runningOut, previousBucket < .runningOut { candidate(.burningFast) }
+            // Re-arms only once the pace eases to 90% of the limit, where Priority stops listing it as burning fast.
+            if currentBucket == .healthy { next.firedMilestones.remove(.burningFast) }
             next.previousBucket = currentBucket
         }
 
-        let underNow = fraction < 0.10
-        if underNow, !next.wasUnderTenPercent { candidate(.underTenPercent) }
-        if !underNow {
-            next.firedMilestones.remove(.underTenPercent)
-        }
-        next.wasUnderTenPercent = underNow
+        if severity == .critical, next.previousSeverity != .critical { candidate(.critical) }
+        if severity != .normal, next.previousSeverity == .normal { candidate(.warning) }
+        if severity != .critical { next.firedMilestones.remove(.critical) }
+        if severity == .normal { next.firedMilestones.remove(.warning) }
+        next.previousSeverity = severity
+
+        if unusedNearReset { candidate(.useItOrLoseIt) }
 
         return Transition(fire: fire, newState: next)
     }
 
-    static func carriedOver(_ previous: NotificationState, resetsAt: Date?) -> NotificationState {
+    static func carriedOver(_ previous: NotificationState, resetsAt: Date?, now: Date) -> NotificationState {
         var next = previous
-        if resetWindowAdvanced(resetsAt: resetsAt, previousReset: previous.resetsAt) {
+        if resetWindowAdvanced(resetsAt: resetsAt, previousReset: previous.resetsAt, now: now) {
             next.firedMilestones = []
-            next.wasUnderTenPercent = false
+            next.previousSeverity = .normal
             next.previousBucket = .untracked
         }
         next.resetsAt = resetsAt ?? previous.resetsAt
         return next
     }
 
+    static let useItOrLoseItLead: TimeInterval = 24 * 60 * 60
+
+    /// Only for windows longer than a day, from the provider's own reset and what's left. A session never qualifies,
+    /// and neither does a dollar limit: those are spending caps, where nothing is lost at the reset.
+    static func isUnusedNearReset(_ data: WidgetData, now: Date) -> Bool {
+        guard data.hasData, data.kind != .dollars, let resetsAt = data.resetsAt,
+              let periodDurationMs = data.periodDurationMs, periodDurationMs > MetricPeriod.dayMs else { return false }
+        let untilReset = resetsAt.timeIntervalSince(now)
+        return untilReset > 0 && untilReset <= useItOrLoseItLead && Int((data.remainingFraction * 100).rounded()) > 50
+    }
+
     static let resetWindowJitterTolerance: TimeInterval = 1
 
-    static func resetWindowAdvanced(resetsAt: Date?, previousReset: Date?) -> Bool {
+    /// A new window starts only once the old reset has passed. A reset that moves forward before then, like
+    /// OpenCode's rolling Session, is the same window.
+    static func resetWindowAdvanced(resetsAt: Date?, previousReset: Date?, now: Date) -> Bool {
         guard let resetsAt else { return false }
         guard let previousReset else { return true }
-        return resetsAt.timeIntervalSince(previousReset) > resetWindowJitterTolerance
+        return previousReset <= now && resetsAt.timeIntervalSince(previousReset) > resetWindowJitterTolerance
     }
 }

@@ -10,6 +10,13 @@ final class OpenCodeUsageMapperTests: XCTestCase {
         ]
     ]
 
+    func testThePlanTakesTheNameOpenCodeGivesTheProduct() throws {
+        for (product, plan) in [("go", "Go"), ("go-plus", "Go Plus"), ("go-teams", "Go Teams")] {
+            XCTAssertEqual(try OpenCodeUsageMapper.plan(goStatus: Data(#"{"product":"\#(product)"}"#.utf8)), plan)
+        }
+        XCTAssertThrowsError(try OpenCodeUsageMapper.plan(goStatus: Data(#"{"product":null}"#.utf8)))
+    }
+
     func testMeterLinesMatchDashboardPercentsAndResets() throws {
         let lines = try OpenCodeUsageMapper.meterLines(body: sampleBody)
         XCTAssertEqual(lines.map(\.label), ["Session", "Weekly", "Monthly"])
@@ -229,12 +236,6 @@ final class OpenCodeUsageMapperTests: XCTestCase {
         }
         XCTAssertEqual(rolling, 100)
         XCTAssertEqual(weekly, 0)
-    }
-
-    func testHTTPResponseBodyRoundTrip() throws {
-        let data = try JSONSerialization.data(withJSONObject: sampleBody)
-        let lines = try OpenCodeUsageMapper.meterLines(HTTPResponse(statusCode: 200, headers: [:], body: data))
-        XCTAssertEqual(lines.count, 3)
     }
 
     func testMissingUsageOrWindowIsInvalid() {

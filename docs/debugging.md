@@ -3,50 +3,66 @@
 ## Run a local build
 
 ```sh
-./script/build_and_run.sh verify
+./script/build_and_run.sh verify   # build, sign, launch, and confirm it runs
+./script/build_and_run.sh logs     # launch and stream its log lines
 ```
 
-The script stops the dev build if it is running, builds the package, stages `dist/OpenUsage.app`,
-embeds Sparkle, signs the bundle with your Apple Development identity (ad hoc when none is installed),
-launches it, and confirms the process is up. The dev bundle id is `com.robinebers.openusage.dev`, so
-it keeps its own settings and Keychain items and runs beside an installed OpenUsage. It has no update
-feed, so the Updates section does not show.
+- The dev bundle id is `com.robinebers.openusage.dev`. It keeps its own settings and Keychain items
+  and runs beside an installed OpenUsage.
+- It has no update feed, so the Updates controls are disabled. It leaves alone the OpenRouter and Z.ai
+  keys 0.7.x saved.
+- Only one dev build runs at a time. If one from another folder is running, `run` and `verify` fail
+  and print its path.
 
-`./script/build_and_run.sh logs` launches the app and streams its log lines.
+## Sample Data (Development Only)
+
+The local build script stages `dist/OpenUsage.app` and `dist/OpenUsage Demo.app`. In the normal dev
+app, turn on **Settings → Advanced → Development → Sample Data**. The switch restarts in the isolated
+demo app. Turn it off to restart the normal dev app with its existing accounts and settings.
+
+- Each launch draws a random seed, shown beside **Demo Data** in the footer. The seed picks every
+  provider's account count and names, which limits show, their usage, and their resets.
+- Every seed shows at least one Warning, Critical, Burning Fast, Used Up, empty balance, Use It or
+  Lose It, and account notice. Limits reset between the next hour and the next week. Rate-limit
+  resets expire between the next hour and four months out.
+- Sample rate-limit resets can be spent, and spending one sends nothing. ChatGPT's are Full Resets,
+  and Z.ai's alternate Session and Weekly. A sample Claude account's go by their count: one is a
+  Weekly Reset, two are Fable Resets, and three are a Weekly Reset and two Fable Resets.
+- **Reshuffle**, under Development in the demo app, swaps in a new seed's accounts without a restart.
+- To reproduce a seed, launch the demo with it:
+  `open "dist/OpenUsage Demo.app" --args -DemoSeed 4242`.
+- The demo uses `com.robinebers.openusage.dev.demo` and memory-only credential vaults. Its accounts,
+  layout, and settings reset at each launch. It never reads or changes the normal dev app's or the
+  installed app's accounts, settings, or Keychain items.
+- Usage reads and hub calls are blocked, and telemetry is off. Add Account still runs the provider's
+  real sign-in; the new account then shows sample usage.
+- The script passes `OPENUSAGE_DEVELOPMENT` only for local development identities. Releases and the
+  downloaded Test Build DMGs do not include Sample Data, and CI checks that release binaries don't.
 
 ## Read the logs
 
-OpenUsage logs through unified logging only, under the subsystem `OpenUsage`, one category per
-subsystem tag (`refresh`, `cache`, `http`, `auth`, `updates`, `config`, `statusitem`, `lifecycle`,
-`notifications`, and `plugin:<id>` and `auth:<id>` per account).
+OpenUsage logs through unified logging under the subsystem `OpenUsage`, with categories such as
+`refresh`, `http`, `auth`, `updates`, and `config`.
 
 ```sh
 log stream --info --predicate 'subsystem == "OpenUsage"'
 log stream --info --predicate 'subsystem == "OpenUsage" AND category == "refresh"'
-log show --last 1h --info --predicate 'subsystem == "OpenUsage"'
-```
-
-macOS keeps info lines in memory only, so `log show` finds them for a few minutes at most. Each
-refresh pass's `batch start` and `batch end` lines are notices, which it writes to disk, so this lists
-every pass after the fact:
-
-```sh
 log show --last 2h --predicate 'subsystem == "OpenUsage" AND category == "refresh"'
 ```
 
-Console.app shows the same lines; filter by subsystem. Debug-level lines exist in debug builds only
-(`CONFIG=debug ./script/build_and_run.sh`) and need `--debug` instead of `--info`.
-
-The HTTP transport logs one line per exchange: method, host and path, status, and duration. It never
-logs a URL's query, a header, or a response body. Every message also passes `LogRedaction` before it
-is written, which masks tokens, keys, `account=` values, and home paths.
+- macOS keeps info lines in memory only, so `log show` finds them for a few minutes at most. Each
+  refresh pass's `batch start` and `batch end` lines go to disk, so the last command lists every pass.
+- **Settings → Advanced → Log Level** sets how much is written: Info (the default), Debug (read with
+  `--debug`), Warning, or Error.
+- Logs never hold a URL's query, a header, or a response body. Tokens, keys, and home paths are masked.
 
 ## Tests
 
 ```sh
 script/test_quiet.sh
 script/test_quiet.sh --filter CursorTokenRefreshTests
+script/test_quiet.sh -Xswiftc -DOPENUSAGE_DEVELOPMENT --filter 'DevelopmentDemoTests|DevelopmentDataModeTests'
 ```
 
-The script runs the suite niced without letting it take the keyboard or show a window, and fails the
-run if a test process ever came to the front.
+The script runs the suite niced, keeps it from taking the keyboard or the screen, and fails the run if
+a test process came to the front.

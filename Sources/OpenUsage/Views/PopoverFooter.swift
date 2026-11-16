@@ -2,30 +2,39 @@ import AppKit
 import SwiftUI
 
 struct PopoverFooter: View {
+    @Environment(AppContainer.self) private var container
     @Environment(PopoverState.self) private var popover
     @Environment(WidgetDataStore.self) private var dataStore
+    @Environment(LayoutStore.self) private var layout
+    @Environment(UpdaterController.self) private var updater
+    @Environment(\.colorScheme) private var colorScheme
     let screen: PopoverScreen
-    let horizontalPadding: CGFloat
 
     @ViewBuilder
     var body: some View {
         Group {
-            if screen == .accounts {
-                EmptyView()
-            } else {
+            if screen == .dashboard {
                 HStack(alignment: .center, spacing: 8) {
                     footerIdentity
+                    #if OPENUSAGE_DEVELOPMENT
+                    DemoDataLabel()
+                    #endif
                     Spacer(minLength: 8)
-                    if screen == .dashboard {
-                        optionsMenu
-                    }
+                    if popover.dashboardTab == .priority, liveBoard.hasRows { copyPriorityButton }
+                    optionsMenu
                 }
+                .padding(.horizontal, 4)
+            } else if screen == .accounts, popover.customizeProviderID == nil, popover.customizeHubID == nil {
+                addAccountButton
+            } else {
+                EmptyView()
             }
         }
-        .padding(.horizontal, horizontalPadding)
-        .padding(.vertical, 12)
+        .frame(minHeight: 26)
+        .padding(.horizontal, PanelMetrics.margin)
+        .padding(.top, DashboardContentView.barGap)
+        .padding(.bottom, PanelMetrics.margin)
         .frame(maxWidth: .infinity)
-        .barGlass()
         .overlay(alignment: .top) {
             if screen == .dashboard, popover.shareNotice.value {
                 shareCopiedPill
@@ -36,11 +45,42 @@ struct PopoverFooter: View {
         .animation(Motion.spring, value: popover.shareNotice.trigger)
     }
 
-    /// The Options pull-down on one glass capsule. The system `.buttonStyle(.glass)` renders flat on a
-    /// `Menu`, so `.menuStyle(.button)` + `.buttonStyle(.plain)` strip the menu chrome and
-    /// `interactiveGlass` owns the surface. Accounts and Settings carry their key equivalents only as
-    /// labels: while the menu is closed `PopoverKeyReader` handles (and consumes) them first, so they
-    /// can't double-fire. ⌘Q is unowned elsewhere, so it rides its menu item directly.
+    private var addAccountButton: some View {
+        Button { popover.isAddingAccount = true } label: {
+            Text("Add New Account")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+    }
+
+    private var liveBoard: PriorityBoard {
+        dataStore.priorityBoard(in: layout.displayGroups, pinned: layout.state.priorityPinIDs, now: Date(), hidingEmails: !container.hideFromScreenShare.isEnabled)
+    }
+
+    /// Copies the Priority tab as a picture. It reads the live board when clicked.
+    private var copyPriorityButton: some View {
+        Button {
+            guard ShareCardRenderer.copy(PriorityShareCard(
+                board: liveBoard, now: Date(), appearance: colorScheme, blursAccountNames: container.hideFromScreenShare.isEnabled
+            ), named: "priority") else { return }
+            popover.shareNotice.present(true)
+        } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 12, weight: .semibold))
+                .frame(width: 26, height: 26)
+                .background(Theme.controlFill, in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Copy Priority Screenshot")
+    }
+
+    /// The Options pull-down behind a round button. Check for Updates… stays listed on every build and
+    /// disables itself while Sparkle can't check: a dev build with no feed, or a check already running.
+    /// Accounts and Settings carry their key equivalents
+    /// only as labels: while the menu is closed `PopoverKeyReader` handles (and consumes) them first, so
+    /// they can't double-fire. ⌘Q is unowned elsewhere, so it rides its menu item directly.
     private var optionsMenu: some View {
         Menu {
             Button { popover.toggle(.accounts) } label: {
@@ -52,6 +92,13 @@ struct PopoverFooter: View {
                 Label("Settings", systemImage: "gearshape")
             }
             .keyboardShortcut(",")
+
+            Divider()
+
+            Button { updater.checkForUpdates() } label: {
+                Label("Check for Updates…", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(!updater.canCheckForUpdates)
 
             Divider()
 
@@ -67,22 +114,17 @@ struct PopoverFooter: View {
             }
             .keyboardShortcut("q")
         } label: {
-            HStack(spacing: 5) {
-                Text("Options")
-                    .font(.system(size: 13, weight: .semibold))
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .semibold))
-            }
-            .padding(.leading, 14)
-            .padding(.trailing, 12)
-            .frame(height: 28)
-            .contentShape(Rectangle())
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 26, height: 26)
+                .background(Theme.controlFill, in: Circle())
+                .contentShape(Circle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .interactiveGlass(in: Capsule())
+        .accessibilityLabel("Options")
     }
 
     private var shareCopiedPill: some View {
@@ -94,20 +136,14 @@ struct PopoverFooter: View {
         )
     }
 
+    /// The version over the refresh countdown, as 0.7 showed them.
     private var footerIdentity: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("OpenUsage \(AppInfo.version)")
-            if let notice = popover.pinNotice.value {
-                Text(notice)
-                    .foregroundStyle(Theme.notice)
-                    .denyShake(trigger: popover.pinNotice.trigger, shakeOnAppear: true)
-            } else {
-                nextUpdateButton
-            }
+            if !layout.displayGroups.isEmpty { nextUpdateButton }
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
-        .animation(Motion.spring, value: popover.pinNotice.value)
     }
 
     private var nextUpdateButton: some View {
@@ -133,12 +169,12 @@ struct PopoverFooter: View {
     }
 
     private var isUpdating: Bool {
-        !dataStore.refreshingProviderIDs.isEmpty
+        container.isRefreshingNow || !dataStore.refreshingProviderIDs.isEmpty
     }
 
     private func refreshNow() {
         guard !isUpdating else { return }
-        Task { await dataStore.refreshAll(force: true) }
+        Task { await container.refreshNow() }
     }
 
     private func updateStatusText(now: Date) -> String {

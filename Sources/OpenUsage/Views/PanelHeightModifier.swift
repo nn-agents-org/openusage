@@ -1,7 +1,7 @@
 import SwiftUI
 import os
 
-/// Built as a `GeometryEffect` (like `DenyShakeEffect`) rather than a plain `ViewModifier`: a custom
+/// Built as a `GeometryEffect` rather than a plain `ViewModifier`: a custom
 /// `ViewModifier` that implements `body` is inferred `@MainActor` (because `ViewModifier.body` is), which
 /// would make `animatableData` `@MainActor` and violate `Animatable`'s `nonisolated` requirement.
 /// `GeometryEffect` supplies its own `body`, so the struct stays nonisolated and the `Animatable`
@@ -36,7 +36,6 @@ enum PanelHeightBridge {
     private struct State {
         var generation = 0
         var pendingHeight: CGFloat?
-        var isScheduled = false
     }
 
     private static let state = OSAllocatedUnfairLock(initialState: State())
@@ -45,18 +44,15 @@ enum PanelHeightBridge {
         state.withLock {
             $0.generation += 1
             $0.pendingHeight = nil
-            $0.isScheduled = false
         }
     }
 
     nonisolated static func push(_ height: CGFloat) {
         guard height > 0 else { return }
         let (scheduled, shouldSchedule) = state.withLock { state in
+            let shouldSchedule = state.pendingHeight == nil
             state.pendingHeight = height
-            let scheduled = state.generation
-            guard !state.isScheduled else { return (scheduled, false) }
-            state.isScheduled = true
-            return (scheduled, true)
+            return (state.generation, shouldSchedule)
         }
         guard shouldSchedule else { return }
         DispatchQueue.main.async {
@@ -64,7 +60,6 @@ enum PanelHeightBridge {
                 guard state.generation == scheduled else { return nil }
                 let height = state.pendingHeight
                 state.pendingHeight = nil
-                state.isScheduled = false
                 return height
             }
             guard let height else { return }
@@ -72,11 +67,5 @@ enum PanelHeightBridge {
                 MenuBarPopover.applyHeight?(height)
             }
         }
-    }
-}
-
-extension View {
-    func drivesPanelHeight(_ height: CGFloat) -> some View {
-        modifier(PanelHeightModifier(height: height))
     }
 }

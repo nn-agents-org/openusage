@@ -1,23 +1,22 @@
 import Foundation
 
 extension ClaudeLogin {
+    /// Anthropic refuses to widen a sign-in's scopes on refresh with `invalid_scope`; like Claude Code, an
+    /// older sign-in then renews with the scopes it has.
     static func refresh(_ refreshToken: String, http: any HTTPClient, now: Date) async throws -> OAuthGrant {
-        let body: [String: Any] = [
-            "grant_type": "refresh_token",
-            "refresh_token": refreshToken,
-            "client_id": clientID,
-            "scope": scopes
-        ]
-        let response = try await http.send(HTTPRequest(
-            method: "POST",
-            url: tokenURL,
-            headers: ["Content-Type": "application/json"],
-            body: try JSONSerialization.data(withJSONObject: body),
-            timeout: 15
-        ))
-        if ProviderError.refusedGrant(response) { throw ProviderError.signInExpired(.claude) }
-        guard (200..<300).contains(response.statusCode) else { throw ProviderError.failed(response) }
-        return try JSONDecoder().decode(OAuthTokenResponse.self, from: response.body).grant(now: now)
+        func renew(_ scope: String) async throws -> HTTPResponse {
+            try await LoginHTTP.postJSON(tokenURL, fields: [
+                "grant_type": "refresh_token",
+                "refresh_token": refreshToken,
+                "client_id": clientID,
+                "scope": scope
+            ], using: http)
+        }
+        var response = try await renew(scopes)
+        if response.statusCode == 400, OAuthTokenResponse.errorCode(response.body) == "invalid_scope" {
+            response = try await renew(profileOnlyScopes)
+        }
+        return try OAuthTokenResponse(renewal: response, kind: .claude).grant(now: now)
     }
 }
 
@@ -54,10 +53,6 @@ struct ClaudeUsageClient: Sendable {
     static let resetGrantsURL = URL(string: "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1")!
 
     var httpClient: HTTPClient
-
-    init(httpClient: HTTPClient = URLSessionHTTPClient()) {
-        self.httpClient = httpClient
-    }
 
     func fetchUsage(accessToken: String) async throws -> HTTPResponse {
         try await sendUsageRequest(url: Self.usageURL, accessToken: accessToken)

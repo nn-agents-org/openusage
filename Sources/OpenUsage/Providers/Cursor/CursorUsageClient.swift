@@ -11,30 +11,23 @@ struct CursorUsageClient: Sendable {
     static let planURL = URL(string: "https://api2.cursor.sh/aiserver.v1.DashboardService/GetPlanInfo")!
     static let refreshURL = URL(string: "https://api2.cursor.sh/oauth/token")!
     static let creditsURL = URL(string: "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCreditGrantsBalance")!
+    static let complatCreditBalanceURL = URL(string: "https://api2.cursor.sh/aiserver.v1.DashboardService/GetComplatCreditBalance")!
+    static let usageStatusURL = URL(string: "https://cursor.com/api/dashboard/v2/usage-status?scope=user")!
     static let restUsageURL = URL(string: "https://cursor.com/api/usage")!
     static let usageSummaryURL = URL(string: "https://cursor.com/api/usage-summary")!
     static let stripeURL = URL(string: "https://cursor.com/api/auth/stripe")!
+    static let profileURL = URL(string: "https://cursor.com/api/auth/me")!
+    static let usageEventsURL = URL(string: "https://cursor.com/api/dashboard/get-filtered-usage-events")!
     static let clientID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
 
     var http: any HTTPClient
 
-    init(http: any HTTPClient = URLSessionHTTPClient()) {
-        self.http = http
-    }
-
     func refreshToken(_ refreshToken: String) async throws -> HTTPResponse {
-        let body: [String: Any] = [
+        try await LoginHTTP.postJSON(Self.refreshURL, fields: [
             "grant_type": "refresh_token",
             "client_id": Self.clientID,
             "refresh_token": refreshToken
-        ]
-        return try await http.send(HTTPRequest(
-            method: "POST",
-            url: Self.refreshURL,
-            headers: ["Content-Type": "application/json"],
-            body: try JSONSerialization.data(withJSONObject: body),
-            timeout: 15
-        ))
+        ], using: http)
     }
 
     func fetchUsage(accessToken: String) async throws -> HTTPResponse {
@@ -53,6 +46,16 @@ struct CursorUsageClient: Sendable {
         try await connectPost(Self.creditsURL, accessToken: accessToken)
     }
 
+    /// The prepaid credit balance of an account whose Cursor, X and Grok plans are merged.
+    func fetchComplatCreditBalance(accessToken: String) async throws -> HTTPResponse {
+        try await connectPost(Self.complatCreditBalanceURL, accessToken: accessToken)
+    }
+
+    /// The month's additional usage and its limit, as the dashboard's Additional usage card shows them.
+    func fetchUsageStatus(accessToken: String) async throws -> HTTPResponse? {
+        try await sessionGet(Self.usageStatusURL, accessToken: accessToken)
+    }
+
     func fetchRequestBasedUsage(accessToken: String) async throws -> HTTPResponse? {
         guard let session = Self.session(from: accessToken) else { return nil }
         var components = URLComponents(url: Self.restUsageURL, resolvingAgainstBaseURL: false)
@@ -68,20 +71,44 @@ struct CursorUsageClient: Sendable {
     }
 
     func fetchUsageSummary(accessToken: String) async throws -> HTTPResponse? {
-        guard let session = Self.session(from: accessToken) else { return nil }
-        return try await http.send(HTTPRequest(
-            method: "GET",
-            url: Self.usageSummaryURL,
-            headers: ["Cookie": "WorkosCursorSessionToken=\(session.sessionToken)"],
-            timeout: 10
-        ))
+        try await sessionGet(Self.usageSummaryURL, accessToken: accessToken)
     }
 
     func fetchStripeBalance(accessToken: String) async throws -> HTTPResponse? {
+        try await sessionGet(Self.stripeURL, accessToken: accessToken)
+    }
+
+    func fetchProfile(accessToken: String) async throws -> HTTPResponse? {
+        try await sessionGet(Self.profileURL, accessToken: accessToken)
+    }
+
+    /// One page of the usage events between `start` and `end`, both inclusive, as the account's Usage page lists them.
+    func fetchUsageEventsPage(accessToken: String, start: Date, end: Date, page: Int, pageSize: Int) async throws -> HTTPResponse? {
+        guard let session = Self.session(from: accessToken) else { return nil }
+        let body: [String: Any] = [
+            "startDate": String(Int(start.timeIntervalSince1970 * 1000)),
+            "endDate": String(Int(end.timeIntervalSince1970 * 1000)),
+            "page": page,
+            "pageSize": pageSize
+        ]
+        return try await http.send(HTTPRequest(
+            method: "POST",
+            url: Self.usageEventsURL,
+            headers: [
+                "Cookie": "WorkosCursorSessionToken=\(session.sessionToken)",
+                "Content-Type": "application/json",
+                "Origin": "https://cursor.com"
+            ],
+            body: try JSONSerialization.data(withJSONObject: body),
+            timeout: 15
+        ))
+    }
+
+    private func sessionGet(_ url: URL, accessToken: String) async throws -> HTTPResponse? {
         guard let session = Self.session(from: accessToken) else { return nil }
         return try await http.send(HTTPRequest(
             method: "GET",
-            url: Self.stripeURL,
+            url: url,
             headers: ["Cookie": "WorkosCursorSessionToken=\(session.sessionToken)"],
             timeout: 10
         ))

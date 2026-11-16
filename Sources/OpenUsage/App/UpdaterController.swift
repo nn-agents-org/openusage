@@ -7,9 +7,9 @@ import Sparkle
 /// Wraps Sparkle's standard updater so the rest of the app stays Sparkle-agnostic.
 ///
 /// The updater starts whenever the app runs from a packaged bundle that declares a `SUFeedURL`. Only the
-/// signed release build bakes one in, so the Settings "Updates" section appears there alone. A bare
-/// `swift run` and the in-place dev build ship no feed, leaving the updater dormant and the section
-/// hidden. See `docs/updates.md` for the user-facing behavior.
+/// signed release build bakes one in, so the Settings "Updates" controls work there alone. A bare
+/// `swift run` and the in-place dev build ship no feed, leaving the updater dormant and the controls
+/// disabled. See `docs/updates.md` for the user-facing behavior.
 ///
 /// It is also both of Sparkle's delegates. `SPUUpdaterDelegate` is main-actor isolated in Sparkle;
 /// `SPUStandardUserDriverDelegate` is nonisolated, so its methods are `nonisolated` here and assume the
@@ -22,8 +22,8 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate, SPUStandardUserDriv
     private var controller: SPUStandardUpdaterController?
     private var canCheckObservation: AnyCancellable?
 
-    private(set) var isActive = false
-    private(set) var canCheckForUpdates = false
+    var isActive = false
+    var canCheckForUpdates = false
     var availableUpdateVersion: String?
 
     var betaChannelEnabled: Bool {

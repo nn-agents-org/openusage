@@ -41,9 +41,77 @@ final class ResetDisplayTests: XCTestCase {
 
         XCTAssertTrue(data.isFreshSessionWindow(now: now))
         XCTAssertEqual(data.dashboardRow(now: now).mark, .bar(fill: 0, severity: .normal, value: "0%", reset: nil))
-        XCTAssertEqual(data.meterState(now: now), .level(.normal))
+        XCTAssertEqual(data.meterState(now: now), .unpaced)
 
         XCTAssertFalse(data.isFreshSessionWindow(now: data.resetsAt!.addingTimeInterval(1)))
+    }
+
+    func testAntigravitySessionJustUnderFullKeepsItsCountdownBehindTheRoundedPercent() {
+        let line = AntigravityUsageMapper.line(
+            pool: AntigravityMetric.sessionLabel, fraction: 0.99965,
+            resetTime: now.addingTimeInterval(2 * 3600), periodMs: MetricPeriod.sessionMs)
+        guard case .progress(_, let used, let limit, _, let resetsAt, let periodMs) = line else {
+            return XCTFail("expected a progress line")
+        }
+        XCTAssertEqual(used, 0.035, accuracy: 0.001)
+        XCTAssertGreaterThan(used, 0)
+
+        var data = WidgetData(title: "Gemini 5h", kind: .percent, used: used, limit: limit,
+                              resetsAt: resetsAt, periodDurationMs: periodMs)
+        data.sessionStartSignal = .zeroUsage
+        data.displayMode = .remaining
+
+        XCTAssertEqual(data.valueText, "100%")
+        XCTAssertFalse(data.isFreshSessionWindow(now: now))
+        XCTAssertEqual(data.compactResetText(now: now), "2h")
+        guard case .bar(_, _, let value, let reset, _) = data.dashboardRow(now: now).mark else {
+            return XCTFail("expected a bar mark")
+        }
+        XCTAssertEqual(value, "100%")
+        XCTAssertEqual(reset, "2h")
+    }
+
+    func testAntigravityUntouchedAndExhaustedWindowsKeepTheirFreshAndCountdownReads() {
+        func line(fraction: Double) -> WidgetData {
+            guard case .progress(_, let used, let limit, _, let resetsAt, let periodMs) =
+                    AntigravityUsageMapper.line(pool: AntigravityMetric.sessionLabel, fraction: fraction,
+                                                resetTime: now.addingTimeInterval(2 * 3600),
+                                                periodMs: MetricPeriod.sessionMs)
+            else { preconditionFailure("expected a progress line") }
+            var data = WidgetData(title: "Gemini 5h", kind: .percent, used: used, limit: limit,
+                                  resetsAt: resetsAt, periodDurationMs: periodMs)
+            data.sessionStartSignal = .zeroUsage
+            data.displayMode = .remaining
+            return data
+        }
+
+        let untouched = line(fraction: 1)
+        XCTAssertTrue(untouched.isFreshSessionWindow(now: now))
+        XCTAssertNil(untouched.compactResetText(now: now))
+
+        let exhausted = line(fraction: 0)
+        XCTAssertFalse(exhausted.isFreshSessionWindow(now: now))
+        XCTAssertEqual(exhausted.compactResetText(now: now), "2h")
+
+        for (fraction, expected) in [(1.5, 0.0), (-0.5, 100.0)] {
+            guard case .progress(_, let used, _, _, _, _) =
+                    AntigravityUsageMapper.line(pool: "x", fraction: fraction, resetTime: nil, periodMs: MetricPeriod.sessionMs)
+            else { return XCTFail("expected a progress line") }
+            XCTAssertEqual(used, expected, "fraction \(fraction) clamps into 0...1")
+        }
+    }
+
+    func testAntigravityWeeklyKeepsTheFractionsRawPercentForTheCardToRound() {
+        guard case .progress(_, let used, let limit, _, let resetsAt, let periodMs) =
+                AntigravityUsageMapper.line(pool: AntigravityMetric.weeklyLabel, fraction: 0.9742,
+                                            resetTime: now.addingTimeInterval(5 * 24 * 3600),
+                                            periodMs: MetricPeriod.weekMs)
+        else { return XCTFail("expected a progress line") }
+        var data = WidgetData(title: "Gemini", kind: .percent, used: used, limit: limit,
+                              resetsAt: resetsAt, periodDurationMs: periodMs)
+        data.displayMode = .remaining
+
+        XCTAssertEqual(data.valueText, "97%")
     }
 
     func testMissingResetDateSignalKeepsCountdownForSubOnePercentSession() {
@@ -73,16 +141,11 @@ final class ResetDisplayTests: XCTestCase {
         XCTAssertEqual(data.compactResetText(now: now), "3d 12h")
     }
 
-    func testTheResetFollowsTheClockSetting() {
-        var data = WidgetData(title: "Session", kind: .percent, used: 90, limit: 100)
-        data.resetsAt = now.addingTimeInterval(5 * 3600)
-        data.periodDurationMs = 10 * 3600 * 1000
+    func testALimitResettingMonthsOutCountsDownInMonthsAndDays() {
+        var data = WidgetData(title: "Monthly", kind: .percent, used: 10, limit: 100)
+        data.resetsAt = Calendar.current.date(byAdding: DateComponents(month: 3, day: 17), to: now)
 
-        data.resetDisplayMode = .relative
-        XCTAssertEqual(data.dashboardRow(now: now).mark, .bar(fill: 0.9, severity: .critical, value: "90%", reset: "5h", flame: true))
-
-        data.resetDisplayMode = .absolute
-        XCTAssertEqual(data.compactResetText(now: now), Formatters.compactClock(data.resetsAt!, now: now))
+        XCTAssertEqual(data.compactResetText(now: now), "3mo 17d")
     }
 
     func testACapWithoutAResetDateHasNoResetUnderEitherClockSetting() {
@@ -93,37 +156,25 @@ final class ResetDisplayTests: XCTestCase {
         }
     }
 
-    func testExpirySeverityBands() {
-        XCTAssertEqual(WidgetData.expirySeverity(secondsRemaining: WidgetData.expiryCriticalWindow - 3600), .critical)
-        XCTAssertEqual(WidgetData.expirySeverity(secondsRemaining: -60), .critical)
-        XCTAssertEqual(WidgetData.expirySeverity(secondsRemaining: WidgetData.expiryCriticalWindow + 3600), .warning)
-        XCTAssertEqual(WidgetData.expirySeverity(secondsRemaining: WidgetData.expiryWarningWindow + 24 * 3600), .normal)
-    }
-
     @MainActor
-    func testResetsRowIsWiredOnlyOnClaudeAndCodexAccounts() {
+    func testResetsRowIsWiredOnlyOnClaudeCodexAndZAIAccounts() {
         let runtimes = ProviderKind.allCases.map {
             AccountProviderRuntime(account: Account(kind: $0, label: "Work"), vault: InMemoryCredentialVault())
         }
         let resetsRows = runtimes.flatMap { runtime in
-            runtime.widgetDescriptors.filter { $0.sample.showsResetExpiries || $0.sample.traySuffix != nil }
+            runtime.widgetDescriptors.filter { $0.sample.showsResetExpiries }
         }
 
-        XCTAssertEqual(resetsRows.map(\.id), runtimes.filter { [.claude, .codex].contains($0.account.kind) }
+        XCTAssertEqual(resetsRows.map(\.id), runtimes.filter { [.claude, .codex, .zai].contains($0.account.kind) }
             .map { "\($0.account.cardID).rateLimitResets" })
-        for row in resetsRows {
-            XCTAssertEqual(row.sample.title, "Limit Resets")
-            XCTAssertEqual(row.metricLabel, "Rate Limit Resets")
-            XCTAssertEqual(row.sample.traySuffix, "resets")
-            XCTAssertTrue(row.sample.showsResetExpiries)
-        }
+        XCTAssertTrue(resetsRows.allSatisfy { $0.metricLabel == "Rate Limit Resets" })
     }
 
     func testResetsPopoverEntriesAreSoonestFirstAndNumbered() {
         let entries = RateLimitResetsDetail.entries(
             from: [
-                now.addingTimeInterval(12 * 24 * 3600 + 18 * 3600),
-                now.addingTimeInterval(WidgetData.expiryCriticalWindow - 3600)
+                (now.addingTimeInterval(12 * 24 * 3600 + 18 * 3600), nil),
+                (now.addingTimeInterval(WidgetData.expiryCriticalWindow - 3600), nil)
             ],
             now: now
         )
@@ -131,35 +182,46 @@ final class ResetDisplayTests: XCTestCase {
         XCTAssertEqual(entries.map(\.number), [1, 2])
         XCTAssertEqual(entries[0].severity, .critical)
         XCTAssertEqual(entries[1].severity, .normal)
-        XCTAssertEqual(entries[1].time.contains(" at "), true)
+        XCTAssertEqual(entries[1].expiry, Formatters.whenLabel(at: entries[1].date, mode: .absolute, now: now))
+        XCTAssertTrue(entries[1].expiry.contains(" at "), entries[1].expiry)
         XCTAssertEqual(entries[1].countdown, "12d 18h")
     }
 
-    func testResetsPopoverPastDueAndImminentEntriesReadSoonWithNoCountdown() {
+    func testResetsPopoverRowReadsItsKindCountdownAndExpiryWithoutUseBy() {
+        let expiry = now.addingTimeInterval(3 * 24 * 3600)
+        let item = ResetItem(kind: .weekly, expiresAt: expiry, claim: .claudeGrant("g"))
+        let entry = RateLimitResetsDetail.content(count: 1, expiries: [], items: [item], now: now).entries.first
+        let absolute = Formatters.whenLabel(at: expiry, mode: .absolute, now: now)!
+        XCTAssertEqual(entry?.item?.kind.title, "Weekly Reset")
+        XCTAssertEqual(entry?.expiry, absolute)
+        XCTAssertEqual(entry?.countdown, "3d")
+        XCTAssertEqual(entry?.accessibilityLabel, "Reset 1, Weekly Reset, \(absolute), expires in 3d")
+    }
+
+    func testResetsPopoverPastDueAndImminentEntriesKeepTheirTimeAndReadExpiring() {
         for offset in [-60.0, 180.0] {
-            let entries = RateLimitResetsDetail.entries(from: [now.addingTimeInterval(offset)], now: now)
+            let expiry = now.addingTimeInterval(offset)
+            let entries = RateLimitResetsDetail.entries(from: [(expiry, nil)], now: now)
+            let time = Formatters.dateAndTime(expiry)
 
             XCTAssertEqual(entries.count, 1)
-            XCTAssertEqual(entries[0].time, "Expiring soon")
+            XCTAssertEqual(entries[0].expiry, time)
             XCTAssertNil(entries[0].countdown)
+            XCTAssertEqual(entries[0].accessibilityLabel, "Reset 1, \(time), expiring")
             XCTAssertEqual(entries[0].severity, .critical)
         }
     }
 
-    func testResetsPopoverEmptyWhenNoResets() {
-        XCTAssertTrue(RateLimitResetsDetail.entries(from: [], now: now).isEmpty)
-    }
-
     func testResetsPopoverContentResolvesEmptyCountOnlyAndTimeline() {
-        XCTAssertEqual(RateLimitResetsDetail.content(count: 0, expiries: [], now: now), .empty)
+        XCTAssertEqual(RateLimitResetsDetail.content(count: 0, expiries: [], items: [], now: now), .empty)
 
         XCTAssertEqual(
-            RateLimitResetsDetail.content(count: 3, expiries: [], now: now),
+            RateLimitResetsDetail.content(count: 3, expiries: [], items: [], now: now),
             .unknownExpiries(count: 3)
         )
 
         let expiries = [now.addingTimeInterval(4 * 24 * 3600)]
-        guard case .timeline(let entries) = RateLimitResetsDetail.content(count: 1, expiries: expiries, now: now) else {
+        guard case .timeline(let entries) = RateLimitResetsDetail.content(count: 1, expiries: expiries, items: [], now: now) else {
             return XCTFail("expected timeline")
         }
         XCTAssertEqual(entries.count, 1)
@@ -168,20 +230,60 @@ final class ResetDisplayTests: XCTestCase {
     func testClaimingOneOfTwoResetsWithOneExpiryLeavesTheOtherOnTheTimeline() {
         let shared = now.addingTimeInterval(4 * 24 * 3600)
         let later = now.addingTimeInterval(6 * 24 * 3600)
+        let items = [shared, shared, later].map { ResetItem(kind: .full, expiresAt: $0, claim: .codexCredit($0)) }
 
-        let visible = RateLimitResetsDetail.visibleExpiries([shared, shared, later], claimed: [shared: 1])
-        XCTAssertEqual(visible, [shared, later])
-        XCTAssertEqual(RateLimitResetsDetail.visibleExpiries([shared, shared], claimed: [shared: 2]), [])
+        let visible = RateLimitResetsDetail.visibleItems(items, claimed: [.codexCredit(shared): 1])
+        XCTAssertEqual(visible.map(\.expiresAt), [shared, later])
+        XCTAssertEqual(RateLimitResetsDetail.visibleItems(Array(items.prefix(2)), claimed: [.codexCredit(shared): 2]), [])
 
-        let content = RateLimitResetsDetail.content(count: 1, expiries: visible, now: now)
-        XCTAssertEqual(content.entries.map(\.key), [.init(date: shared, ordinal: 0), .init(date: later, ordinal: 0)])
+        let content = RateLimitResetsDetail.content(count: 3, expiries: [], items: items, claimed: [.codexCredit(shared): 1], now: now)
+        XCTAssertEqual(content.entries.map(\.key), [
+            .init(claim: .codexCredit(shared), date: shared, ordinal: 0), .init(claim: .codexCredit(later), date: later, ordinal: 0)
+        ])
     }
 
-    func testCompactDurationAlwaysShowsHoursAtDayScale() {
-        XCTAssertEqual(Formatters.compactDuration(4 * 24 * 3600 + 52 * 60), "4d 0h")
-        XCTAssertEqual(Formatters.compactDuration(7 * 24 * 3600), "7d 0h")
-        XCTAssertEqual(Formatters.compactDuration(9 * 24 * 3600 + 21 * 3600), "9d 21h")
-        XCTAssertEqual(Formatters.compactDuration(5 * 3600), "5h")
-        XCTAssertEqual(Formatters.compactDuration(52 * 60), "52m")
+    func testDurationShowsTheLargestUnitAndTheNextOneDownWithMoForMonths() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Dubai")!
+        let start = calendar.date(from: DateComponents(year: 2026, month: 11, day: 10, hour: 9))!
+        func duration(_ components: DateComponents) -> String? {
+            Formatters.duration(from: start, to: calendar.date(byAdding: components, to: start)!, calendar: calendar)
+        }
+        XCTAssertEqual(duration(DateComponents(minute: 45)), "45m")
+        XCTAssertEqual(duration(DateComponents(hour: 4, minute: 12)), "4h 12m")
+        XCTAssertEqual(duration(DateComponents(day: 2, hour: 5)), "2d 5h")
+        XCTAssertEqual(duration(DateComponents(day: 17)), "17d", "no zero tail")
+        XCTAssertEqual(duration(DateComponents(day: 29, hour: 23)), "29d 23h", "just under a month keeps days and hours")
+        XCTAssertEqual(duration(DateComponents(month: 1)), "1mo", "a calendar month, Nov 10 to Dec 10, not 30 days")
+        XCTAssertEqual(duration(DateComponents(day: 30)), "1mo")
+        XCTAssertEqual(duration(DateComponents(month: 3, day: 17)), "3mo 17d")
+        XCTAssertEqual(duration(DateComponents(month: 3, day: 27, hour: 2)), "3mo 27d")
+        XCTAssertEqual(duration(DateComponents(month: 11, day: 29, hour: 23)), "11mo 29d")
+        XCTAssertEqual(duration(DateComponents(month: 14)), "1y 2mo", "12 months on roll into calendar years")
+        XCTAssertEqual(duration(DateComponents(year: 1, day: 5)), "1y", "the unit after years is months, and it's zero")
+        XCTAssertNil(Formatters.duration(from: start, to: start.addingTimeInterval(-60), calendar: calendar))
+        XCTAssertEqual(Formatters.whenLabel(at: calendar.date(byAdding: .month, value: 4, to: start)!, mode: .relative,
+                                            now: start, calendar: calendar), "4mo", "the resets popover's countdown")
+    }
+
+    func testDurationRoundsUpToTheMinuteAndDropsZeroTails() {
+        XCTAssertEqual(Formatters.duration(from: now, to: now.addingTimeInterval(4 * 24 * 3600 + 52 * 60)), "4d")
+        XCTAssertEqual(Formatters.duration(from: now, to: now.addingTimeInterval(9 * 24 * 3600 + 21 * 3600)), "9d 21h")
+        XCTAssertEqual(Formatters.duration(from: now, to: now.addingTimeInterval(5 * 3600)), "5h")
+        XCTAssertEqual(Formatters.duration(from: now, to: now.addingTimeInterval(52 * 60 - 30)), "52m")
+        XCTAssertEqual(Formatters.duration(from: now, to: now.addingTimeInterval(1)), "1m")
+    }
+
+    func testWeekdayTimeShowsMinutesSoTheHourNeverReadsAsADate() {
+        let reset = Date(timeIntervalSince1970: 1_794_382_293) // Wed 2026-11-11 07:31:33 UTC
+        let madrid = TimeZone(identifier: "Europe/Madrid")!
+
+        XCTAssertEqual(TimeFormatSetting.auto.weekdayTime(reset, base: Locale(identifier: "es_ES"), timeZone: madrid), "mié, 8:31")
+        XCTAssertEqual(TimeFormatSetting.auto.weekdayTime(reset, base: Locale(identifier: "en_US"), timeZone: madrid), "Wed 8:31\u{202F}AM")
+        XCTAssertEqual(TimeFormatSetting.twentyFourHour.weekdayTime(reset, base: Locale(identifier: "en_US"), timeZone: madrid), "Wed 08:31")
+    }
+
+    func testDurationOfAResetTooFarOffForAnIntStillReadsInYears() {
+        XCTAssertEqual(Formatters.duration(from: now, to: now.addingTimeInterval(1e300))?.hasSuffix("y"), true)
     }
 }

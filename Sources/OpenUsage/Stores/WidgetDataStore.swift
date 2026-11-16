@@ -10,13 +10,23 @@ final class WidgetDataStore {
     private let defaults: UserDefaults
     private let now: () -> Date
     private let providerRefreshTimeout: TimeInterval
+    private let offlineRetryDelays: [TimeInterval]
 
     private static let meterStyleKey = "meterStyle"
     private static let resetDisplayModeKey = "resetDisplayMode"
+    private static let menuBarLimitKey = "menuBarLimit"
+    private static let menuBarAlwaysShowsKey = "menuBarAlwaysShows"
+    private static let priorityWarningKey = "priorityWarning"
+    private static let priorityCriticalKey = "priorityCritical"
+    private static let priorityBurningFastKey = "priorityBurningFast"
+    private static let priorityUseItOrLoseItKey = "priorityUseItOrLoseIt"
+    private static let paceMarksKey = "paceMarks"
     private static let slowProviderRefreshThreshold: TimeInterval = 10
     static let defaultProviderRefreshTimeout: TimeInterval = 120
 
-    var snapshots: [String: ProviderSnapshot] = [:]
+    var snapshots: [String: ProviderSnapshot] = [:] {
+        didSet { latchBurningFast() }
+    }
     private var inFlight: [String: Task<Result<ProviderSnapshot, RefreshFailure>, Never>] = [:]
     var refreshingProviderIDs: Set<String> { Set(inFlight.keys) }
     var lastRefreshAt: Date?
@@ -27,10 +37,47 @@ final class WidgetDataStore {
         didSet { defaults.set(meterStyle.rawValue, forKey: Self.meterStyleKey) }
     }
 
-    @ObservationIgnored var onRefreshOutcome: (@MainActor (ProviderKind, RefreshOutcome, Bool) -> Void)?
-
     var resetDisplayMode: ResetDisplayMode {
         didSet { defaults.set(resetDisplayMode.rawValue, forKey: Self.resetDisplayModeKey) }
+    }
+
+    var menuBarLimit: MenuBarLimit {
+        didSet { defaults.set(menuBarLimit.rawValue, forKey: Self.menuBarLimitKey) }
+    }
+
+    /// The menu bar lists every Priority section in the tab's order instead of only what's running out.
+    var menuBarAlwaysShows: Bool {
+        didSet { defaults.set(menuBarAlwaysShows, forKey: Self.menuBarAlwaysShowsKey) }
+    }
+
+    var priorityLimits: PriorityLimits {
+        didSet {
+            defaults.set(priorityLimits.warning, forKey: Self.priorityWarningKey)
+            defaults.set(priorityLimits.critical, forKey: Self.priorityCriticalKey)
+        }
+    }
+
+    /// Priority lists limits that would run out before they reset, however much they have left.
+    var showsBurningFast: Bool {
+        didSet { defaults.set(showsBurningFast, forKey: Self.priorityBurningFastKey) }
+    }
+
+    /// Priority lists limits with over half left that reset within a day, the same rule as the Use It or Lose It alert.
+    var showsUseItOrLoseIt: Bool {
+        didSet { defaults.set(showsUseItOrLoseIt, forKey: Self.priorityUseItOrLoseItKey) }
+    }
+
+    /// Bars and Priority's rings mark where usage would be at an even pace through the window.
+    var showsPaceMarks: Bool {
+        didSet { defaults.set(showsPaceMarks, forKey: Self.paceMarksKey) }
+    }
+
+    /// The limits that were burning fast at their last reading, with their window's reset. See `BurningFast`.
+    private(set) var burningFastWindows: [String: Date] = [:]
+
+    /// What Priority and the menu bar list as burning fast, or nil while the setting is off.
+    var burningFast: BurningFast? {
+        showsBurningFast ? BurningFast(latched: burningFastWindows) : nil
     }
 
     init(
@@ -40,6 +87,7 @@ final class WidgetDataStore {
         defaults: UserDefaults = .standard,
         now: @escaping () -> Date = Date.init,
         providerRefreshTimeout: TimeInterval = WidgetDataStore.defaultProviderRefreshTimeout,
+        offlineRetryDelays: [TimeInterval] = RefreshSetting.offlineRetryDelays,
     ) {
         precondition(providerRefreshTimeout > 0)
         self.registry = registry
@@ -48,8 +96,18 @@ final class WidgetDataStore {
         self.defaults = defaults
         self.now = now
         self.providerRefreshTimeout = providerRefreshTimeout
+        self.offlineRetryDelays = offlineRetryDelays
         self.meterStyle = defaults.enumValue(forKey: Self.meterStyleKey, default: .remaining)
         self.resetDisplayMode = defaults.enumValue(forKey: Self.resetDisplayModeKey, default: .relative)
+        self.menuBarLimit = defaults.enumValue(forKey: Self.menuBarLimitKey, default: .upToThree)
+        self.menuBarAlwaysShows = defaults.bool(forKey: Self.menuBarAlwaysShowsKey)
+        self.priorityLimits = PriorityLimits(
+            warning: defaults.object(forKey: Self.priorityWarningKey) as? Int ?? PriorityLimits.standard.warning,
+            critical: defaults.object(forKey: Self.priorityCriticalKey) as? Int ?? PriorityLimits.standard.critical
+        )
+        self.showsBurningFast = defaults.object(forKey: Self.priorityBurningFastKey) as? Bool ?? true
+        self.showsUseItOrLoseIt = defaults.object(forKey: Self.priorityUseItOrLoseItKey) as? Bool ?? true
+        self.showsPaceMarks = defaults.object(forKey: Self.paceMarksKey) as? Bool ?? false
         let ids = Set(registry.providers.map(\.id))
         self.snapshots = cache.load().filter { ids.contains($0.key) }
         for (id, snapshot) in snapshots { providersByID[id]?.restore(snapshot) }
@@ -57,10 +115,11 @@ final class WidgetDataStore {
 
     func apply(providers: [ProviderRuntime], registry: WidgetRegistry) {
         self.registry = registry
+        let previous = providersByID
         providersByID = Dictionary(uniqueKeysWithValues: providers.map { ($0.provider.id, $0) })
         let ids = Set(providersByID.keys)
-        for (id, task) in inFlight where !ids.contains(id) { task.cancel() }
-        inFlight = inFlight.filter { ids.contains($0.key) }
+        for (id, task) in inFlight where providersByID[id] !== previous[id] { task.cancel() }
+        inFlight = inFlight.filter { providersByID[$0.key] === previous[$0.key] }
         let next = snapshots.filter { ids.contains($0.key) }
         let removed = next.count < snapshots.count
         snapshots = next
@@ -115,15 +174,33 @@ final class WidgetDataStore {
             return .backedOff
         }
 
-        guard let provider = providersByID[providerID] else { return .skipped }
-        guard inFlight[providerID] == nil else {
-            AppLog.debug(.refresh, "cache skip \(providerID) (already in flight)")
-            return .skipped
+        if let running = inFlight[providerID] {
+            guard force else {
+                AppLog.debug(.refresh, "cache skip \(providerID) (already in flight)")
+                return .skipped
+            }
+            if case .failure(let failure) = await running.value, case .rateLimited = failure.kind {
+                return .backedOff
+            }
+            if let next = inFlight[providerID], next != running {
+                return await refresh(providerID: providerID, force: force, rereadHourly: rereadHourly)
+            }
         }
-        if rereadHourly { provider.forgetHourlyReads() }
+        guard let provider = providersByID[providerID] else { return .skipped }
         let start = ProcessInfo.processInfo.systemUptime
-        let work = Task { [providerRefreshTimeout] in
-            await ProviderRefreshDeadline.refresh(provider, timeout: providerRefreshTimeout)
+        let work = Task { [providerRefreshTimeout, offlineRetryDelays] in
+            var retries = offlineRetryDelays[...]
+            while true {
+                if rereadHourly { provider.forgetHourlyReads() }
+                let result = await ProviderRefreshDeadline.run(timeout: providerRefreshTimeout) { () -> Result<ProviderSnapshot, RefreshFailure> in
+                    guard !Task.isCancelled else { return .failure(RefreshFailure(error: CancellationError())) }
+                    return await provider.refresh()
+                }
+                    ?? .failure(RefreshFailure(message: "Refresh timed out after \(Int(providerRefreshTimeout))s", kind: .refused))
+                guard case .failure(let failure) = result, failure.kind == .offline, let delay = retries.popFirst() else { return result }
+                AppLog.warn(.refresh, "\(providerID) offline: \(failure.message) Retrying in \(Int(delay.rounded(.up)))s.")
+                guard (try? await Task.sleep(for: .seconds(delay))) != nil else { return result }
+            }
         }
         inFlight[providerID] = work
         defer { if inFlight[providerID] == work { inFlight[providerID] = nil } }
@@ -145,14 +222,11 @@ final class WidgetDataStore {
         }
         let snapshot: ProviderSnapshot
         switch result {
-        case .failure(let failure): return recordFailure(failure, providerID: providerID, kind: provider.provider.kind, force: force)
+        case .failure(let failure): return recordFailure(failure, providerID: providerID)
         case .success(let refreshed): snapshot = refreshed
         }
-        if backoffs[providerID] != nil { backoffs[providerID] = nil }
-        snapshots[providerID] = snapshot
-        cache.save(snapshots)
+        store(snapshot, for: providerID)
         AppLog.info(.refresh, "\(providerID) ok (\(durationMs)ms)")
-        onRefreshOutcome?(provider.provider.kind, .refreshed, force)
         return .refreshed
     }
 
@@ -161,20 +235,24 @@ final class WidgetDataStore {
             guard let provider = providersByID[id], inFlight[id] == nil, let snapshot = snapshots[id],
                   backoffs[id]?.holds(at: now(), forced: false) != true
             else { continue }
-            guard let updated = await provider.refreshHourlyReads(of: snapshot),
-                  providersByID[id] === provider, snapshots[id] == snapshot
-            else { continue }
+            let read = await ProviderRefreshDeadline.run(timeout: providerRefreshTimeout) {
+                await provider.refreshHourlyReads(of: snapshot)
+            }
+            guard let read else {
+                AppLog.warn(.refresh, "\(id) hourly reads timed out after \(Int(providerRefreshTimeout))s")
+                continue
+            }
+            guard let updated = read, providersByID[id] === provider, snapshots[id] == snapshot else { continue }
             snapshots[id] = updated
             cache.save(snapshots)
         }
     }
 
-    private func recordFailure(_ failure: RefreshFailure, providerID: String, kind: ProviderKind, force: Bool) -> RefreshOutcome {
+    private func recordFailure(_ failure: RefreshFailure, providerID: String) -> RefreshOutcome {
         let backoff = RefreshBackoff.after(failure, previous: backoffs[providerID], now: now())
         backoffs[providerID] = backoff
         let wait = Int(backoff.retryAt.timeIntervalSince(now()))
         AppLog.warn(.refresh, "\(providerID) failed: \(failure.message) Next try in \(wait)s.")
-        onRefreshOutcome?(kind, .failed, force)
         return .failed
     }
 
@@ -182,50 +260,99 @@ final class WidgetDataStore {
         max(0, Int((ProcessInfo.processInfo.systemUptime - start) * 1000))
     }
 
+    /// Installs a validated key's runtime and snapshot together. Reads started by the previous
+    /// runtime can finish later, but the runtime identity check discards their results.
+    func replaceProvider(_ provider: ProviderRuntime, snapshot: ProviderSnapshot) {
+        let id = provider.provider.id
+        inFlight.removeValue(forKey: id)?.cancel()
+        providersByID[id] = provider
+        store(snapshot, for: id)
+    }
+
+    private func store(_ snapshot: ProviderSnapshot, for providerID: String) {
+        backoffs[providerID] = nil
+        snapshots[providerID] = snapshot
+        cache.save(snapshots)
+    }
+
+    private func latchBurningFast() {
+        let at = now()
+        let previous = BurningFast(latched: burningFastWindows)
+        var burning: [String: Date] = [:]
+        for descriptor in registry.providers.flatMap({ registry.descriptors(for: $0.id) }) {
+            let data = data(for: descriptor)
+            guard let reset = data.resetsAt,
+                  BurningFast.isBurning(data, now: at, wasBurning: previous.wasBurning(descriptor.id, data, now: at)) else { continue }
+            burning[descriptor.id] = reset
+        }
+        if burning != burningFastWindows { burningFastWindows = burning }
+    }
+
     func errorMessage(for providerID: String) -> String? {
         backoffs[providerID].flatMap { $0.providerAsked ? nil : $0.message }
+    }
+
+    func notice(for providerID: String) -> String? {
+        backoffs[providerID] == nil ? snapshots[providerID]?.notice : errorMessage(for: providerID)
+    }
+
+    func usageBreakdown(for descriptor: WidgetDescriptor) -> UsageBreakdown? {
+        snapshots[descriptor.providerID]?.usageBreakdowns?[descriptor.key]
     }
 
     func data(for descriptor: WidgetDescriptor) -> WidgetData {
         var result: WidgetData
         if let snapshot = snapshots[descriptor.providerID],
-           let line = snapshot.line(label: descriptor.metricLabel),
+           let line = snapshot.line(label: descriptor.metricLabel)
+               ?? descriptor.unreportedValues.map({ .values(label: descriptor.metricLabel, values: $0) }),
            let data = resolve(line, descriptor: descriptor) {
             result = data
+            result.title = snapshot.lineTitles?[descriptor.metricLabel] ?? result.title
         } else {
             result = descriptor.sample
             result.hasData = false
         }
 
         result.displayMode = meterStyle
+        result.priorityLimits = priorityLimits
         result.resetDisplayMode = resetDisplayMode
+        result.showsPaceMarks = showsPaceMarks
         return result
+    }
+
+    /// The accounts with their lines, in the order the dashboard shows them.
+    func accounts(in groups: [ProviderMetrics]) -> [DashboardAccount] {
+        families(in: groups).flatMap(\.accounts)
+    }
+
+    func families(in groups: [ProviderMetrics]) -> [DashboardFamily] {
+        DashboardFamily.make(groups: groups, isWaiting: { snapshots[$0.id] == nil && problem(for: $0.id) == nil }) {
+            DashboardLine(descriptor: $0, data: data(for: $0))
+        }
     }
 
     func plan(for providerID: String) -> String? {
         snapshots[providerID]?.plan
     }
 
-    static let stalenessThreshold = RefreshSetting.interval * 2
-
-    func stalenessHint(for providerID: String) -> String? {
-        if let backoff = backoffs[providerID], backoff.providerAsked, now() < backoff.retryAt {
-            let name = providersByID[providerID]?.provider.displayName ?? "The provider"
-            return "\(name) asked OpenUsage to wait. Retrying at \(Formatters.compactClock(backoff.retryAt, now: now()))."
-        }
-        guard let refreshedAt = snapshots[providerID]?.refreshedAt else { return nil }
-        let age = now().timeIntervalSince(refreshedAt)
-        guard age >= Self.stalenessThreshold, let duration = Formatters.compactDuration(age) else {
-            return nil
-        }
-        return "Last updated \(duration) ago"
+    /// Why an account needs the user: Priority lists it under Needs Attention, and its page says why and offers Sign In Again.
+    /// Old values count only once a refresh has failed. Until then they are waiting for their next read, as on launch.
+    func problem(for providerID: String) -> String? {
+        notice(for: providerID) ?? (backoffs[providerID] == nil ? nil : stalenessHint(for: providerID))
     }
 
-    var hasStaleAccount: Bool {
-        guard let lastRefreshAt else { return false }
-        return snapshots.contains { id, snapshot in
-            backoffs[id] != nil && lastRefreshAt.timeIntervalSince(snapshot.refreshedAt) >= RefreshSetting.interval
+    func stalenessHint(for providerID: String) -> String? {
+        let date = now()
+        let backoff = backoffs[providerID]
+        if let backoff, backoff.providerAsked, date < backoff.retryAt {
+            let name = providersByID[providerID]?.provider.displayName ?? "The provider"
+            return "\(name) asked OpenUsage to wait. Retrying at \(Formatters.compactClock(backoff.retryAt, now: date))."
         }
+        if let snapshot = snapshots[providerID], snapshot.isStale(at: date),
+           let duration = Formatters.duration(from: snapshot.refreshedAt, to: date) {
+            return "Last updated \(duration) ago"
+        }
+        return backoff?.providerAsked == true ? "Waiting to retry after a rate limit." : nil
     }
 
     private func resolve(_ line: MetricLine, descriptor: WidgetDescriptor) -> WidgetData? {
@@ -235,6 +362,7 @@ final class WidgetDataStore {
             var result = WidgetData(
                 title: descriptor.sample.title,
                 kind: format.metricKind,
+                currencyCode: format.currencyCode,
                 used: normalizedUsed,
                 limit: limit,
                 resetsAt: resetsAt,

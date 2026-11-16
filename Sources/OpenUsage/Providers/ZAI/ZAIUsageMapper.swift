@@ -10,6 +10,13 @@ enum ZAIUsageMapper {
         guard let root = ProviderParse.jsonObject(body) else {
             throw ProviderError.invalidResponse
         }
+        if (root["success"] as? Bool) == false,
+           (root["msg"] as? String)?.localizedCaseInsensitiveContains("coding plan") == true {
+            throw ProviderError.unavailable("No active GLM Coding Plan. Subscribe at z.ai/subscribe to see usage.")
+        }
+        if (root["success"] as? Bool) == false, (root["code"] as? Int) == 401 {
+            throw ProviderError.signInExpired(.zai)
+        }
         let container: [String: Any]
         if let data = root["data"] {
             guard let data = data as? [String: Any] else { throw ProviderError.invalidResponse }
@@ -25,7 +32,6 @@ enum ZAIUsageMapper {
         }
 
         var lines: [MetricLine] = []
-        var sawRecognizedLimit = false
 
         let percentageLimits = limits.filter {
             let type = ($0["type"] as? String) ?? ($0["name"] as? String)
@@ -33,7 +39,6 @@ enum ZAIUsageMapper {
         }
         for entry in percentageLimits {
             guard let window = try classifyTokenWindow(entry) else { continue }
-            sawRecognizedLimit = true
             switch window {
             case .session(let periodMs):
                 lines.append(try percentLine(entry, label: "Session", periodMs: periodMs))
@@ -42,13 +47,7 @@ enum ZAIUsageMapper {
             }
         }
         if let web = findLimit(limits, type: "TIME_LIMIT") {
-            sawRecognizedLimit = true
             lines.append(try webSearchLine(from: web))
-        }
-
-        guard !lines.isEmpty else {
-            if sawRecognizedLimit { throw ProviderError.invalidResponse }
-            return []
         }
         return lines
     }
@@ -84,10 +83,9 @@ enum ZAIUsageMapper {
         default: return nil
         }
         let duration = unitMs * number
-        guard duration >= 1, duration < Double(Int.max) else {
+        guard duration >= 1, let periodMs = ProviderParse.int(duration) else {
             throw ProviderError.invalidResponse
         }
-        let periodMs = Int(duration)
         if periodMs < 24 * 60 * 60 * 1000 {
             return .session(periodMs: periodMs)
         }

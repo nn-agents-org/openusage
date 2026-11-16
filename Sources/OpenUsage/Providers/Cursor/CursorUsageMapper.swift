@@ -39,6 +39,13 @@ struct CursorPlanUsageFacts {
     }
 }
 
+/// What an account whose Cursor, X and Grok plans are merged reports in place of credit grants, the
+/// Stripe balance and the on-demand spend limit.
+struct CursorUnifiedBilling {
+    var creditBalance: [String: Any]?
+    var usageStatus: [String: Any]?
+}
+
 enum CursorUsageMapper {
     static let billingPeriodMs = MetricPeriod.monthMs
 
@@ -70,7 +77,8 @@ enum CursorUsageMapper {
         usage: [String: Any],
         planName: String?,
         creditGrants: [String: Any]?,
-        stripeBalanceCents: Double
+        stripeBalanceCents: Double,
+        unified: CursorUnifiedBilling? = nil
     ) throws -> ProviderUsage {
         let facts = CursorPlanUsageFacts(usage: usage)
         guard facts.isEnabled,
@@ -86,7 +94,12 @@ enum CursorUsageMapper {
         }
 
         var lines: [MetricLine] = []
-        appendCredits(creditGrants: creditGrants, stripeBalanceCents: stripeBalanceCents, to: &lines)
+        var lineTitles: [String: String] = [:]
+        if let unified {
+            appendUnifiedCredits(unified.creditBalance, to: &lines)
+        } else {
+            appendCredits(creditGrants: creditGrants, stripeBalanceCents: stripeBalanceCents, to: &lines)
+        }
 
         let planUsedCents = ProviderParse.number(planUsage["totalSpend"])
             ?? ((facts.limit ?? 0) - (ProviderParse.number(planUsage["remaining"]) ?? 0))
@@ -125,6 +138,11 @@ enum CursorUsageMapper {
             lines.append(.percent("Total usage", totalUsagePercent, resetsAt: cycle.resetsAt, periodMs: cycle.periodDurationMs))
         }
 
+        if let unified {
+            appendAdditionalUsage(unified.usageStatus, to: &lines)
+            return ProviderUsage(plan: planLabel(planName), lines: lines, lineTitles: lineTitles)
+        }
+
         if let autoPercentUsed = ProviderParse.number(planUsage["autoPercentUsed"]) {
             lines.append(.percent("Cursor Models", autoPercentUsed, resetsAt: cycle.resetsAt, periodMs: cycle.periodDurationMs))
         }
@@ -134,15 +152,29 @@ enum CursorUsageMapper {
         }
 
         if let spendLimitUsage {
-            let limit = ProviderParse.number(spendLimitUsage["individualLimit"]) ?? ProviderParse.number(spendLimitUsage["pooledLimit"]) ?? 0
-            let remaining = ProviderParse.number(spendLimitUsage["individualRemaining"]) ?? ProviderParse.number(spendLimitUsage["pooledRemaining"]) ?? 0
-            let spent = onDemandSpendCents(from: spendLimitUsage, limit: limit, remaining: remaining)
+            let individualLimit = ProviderParse.number(spendLimitUsage["individualLimit"])
+            let hasTeamSpend = facts.isTeamByShape || ProviderParse.number(spendLimitUsage["pooledUsed"]) ?? 0 > 0
+            let budget: (limit: Double, spent: [String], remaining: String?) = if let individualLimit {
+                (individualLimit, hasTeamSpend ? ["individualUsed"] : ["individualUsed", "totalSpend"], "individualRemaining")
+            } else if facts.pooledLimit > 0 {
+                (facts.pooledLimit, ["pooledUsed"], "pooledRemaining")
+            } else {
+                (0, ["individualUsed", "pooledUsed", "totalSpend"], nil)
+            }
+            let limit = budget.limit
+            let spent = onDemandSpendCents(
+                reported: budget.spent.compactMap { ProviderParse.number(spendLimitUsage[$0]) },
+                limit: limit,
+                remaining: budget.remaining.flatMap { ProviderParse.number(spendLimitUsage[$0]) }
+            )
             if limit > 0 {
                 lines.append(.progress(
                     label: "On-demand",
                     used: ProviderParse.centsToDollars(spent),
                     limit: ProviderParse.centsToDollars(limit),
-                    format: .dollars
+                    format: .dollars,
+                    resetsAt: cycle.resetsAt,
+                    periodDurationMs: cycle.periodDurationMs
                 ))
             } else if spent > 0 {
                 lines.append(.values(
@@ -150,21 +182,19 @@ enum CursorUsageMapper {
                     values: [MetricValue(number: ProviderParse.centsToDollars(spent), kind: .dollars)]
                 ))
             }
+            if individualLimit == nil && facts.isTeamByShape && (limit > 0 || spent > 0) {
+                lineTitles["On-demand"] = "Team Spend"
+            }
         }
 
-        return ProviderUsage(plan: planLabel(planName), lines: lines)
+        return ProviderUsage(plan: planLabel(planName), lines: lines, lineTitles: lineTitles)
     }
 
-    private static func onDemandSpendCents(from spendLimitUsage: [String: Any], limit: Double, remaining: Double) -> Double {
-        let reported = [
-            ProviderParse.number(spendLimitUsage["individualUsed"]),
-            ProviderParse.number(spendLimitUsage["pooledUsed"]),
-            ProviderParse.number(spendLimitUsage["totalSpend"])
-        ].compactMap { $0 }
+    private static func onDemandSpendCents(reported: [Double], limit: Double, remaining: Double?) -> Double {
         if let positive = reported.first(where: { $0 > 0 }) {
             return positive
         }
-        let inferred = max(0, limit - remaining)
+        let inferred = remaining.map { max(0, limit - $0) } ?? 0
         return inferred > 0 ? inferred : (reported.first ?? 0)
     }
 
@@ -213,10 +243,52 @@ enum CursorUsageMapper {
         let combinedTotalCents = (hasValidGrantData ? grantTotalCents : 0) + stripeBalanceCents
         let remainingCents = max(0, combinedTotalCents - (hasValidGrantData ? grantUsedCents : 0))
 
-        guard combinedTotalCents > 0 else { return }
+        guard creditGrants != nil || combinedTotalCents > 0 else { return }
         lines.append(.values(
             label: "Credits",
             values: [MetricValue(number: ProviderParse.centsToDollars(remainingCents), kind: .dollars)]
+        ))
+    }
+
+    /// The dashboard's Credits card. Cursor leaves out a zero balance.
+    private static func appendUnifiedCredits(_ balance: [String: Any]?, to lines: inout [MetricLine]) {
+        guard let balance else { return }
+        let remainingCents = max(0, ProviderParse.number(balance["usdRemainingCents"]) ?? 0)
+        lines.append(.values(
+            label: "Credits",
+            values: [MetricValue(number: ProviderParse.centsToDollars(remainingCents), kind: .dollars)]
+        ))
+    }
+
+    /// The dashboard's Additional usage card: this month's spend past the weekly included pool, paid from
+    /// credits. It is off when Cursor says so or the limit is $0, and has no bar when there is no limit.
+    private static func appendAdditionalUsage(_ status: [String: Any]?, to lines: inout [MetricLine]) {
+        guard let status,
+              (status["availability"] as? String ?? "available") == "available",
+              let monthly = status["monthlyUsage"] as? [String: Any],
+              monthly["additionalUsageOff"] as? Bool != true
+        else { return }
+        let limitCents = ProviderParse.number(monthly["limitCents"])
+        guard limitCents != 0 else { return }
+        let used = ProviderParse.centsToDollars(max(0, ProviderParse.number(monthly["usedCents"]) ?? 0))
+        guard let limitCents, limitCents > 0 else {
+            lines.append(.values(label: "On-demand", values: [MetricValue(number: used, kind: .dollars)]))
+            return
+        }
+        let resetsAt = (monthly["resetsAt"] as? String).flatMap(OpenUsageISO8601.date(from:))
+        let start = (monthly["periodStart"] as? String).flatMap(OpenUsageISO8601.date(from:))
+        let periodMs = if let start, let resetsAt, resetsAt > start {
+            Int(resetsAt.timeIntervalSince(start) * 1000)
+        } else {
+            MetricPeriod.monthMs
+        }
+        lines.append(.progress(
+            label: "On-demand",
+            used: used,
+            limit: ProviderParse.centsToDollars(limitCents),
+            format: .dollars,
+            resetsAt: resetsAt,
+            periodDurationMs: periodMs
         ))
     }
 
@@ -225,17 +297,19 @@ enum CursorUsageMapper {
         let cycleEnd = ProviderParse.number(usage["billingCycleEnd"])
         guard let cycleStart,
               let cycleEnd,
-              cycleEnd > cycleStart
+              cycleEnd > cycleStart,
+              let periodMs = ProviderParse.int(cycleEnd - cycleStart)
         else {
             return (cycleEnd.map { Date(timeIntervalSince1970: $0 / 1000) }, billingPeriodMs)
         }
-        return (
-            Date(timeIntervalSince1970: cycleEnd / 1000),
-            Int(cycleEnd - cycleStart)
-        )
+        return (Date(timeIntervalSince1970: cycleEnd / 1000), periodMs)
     }
 
     static let orgMembershipTypes: Set<String> = ["enterprise", "team"]
+
+    static func membershipType(in summary: [String: Any]?) -> String? {
+        normalizedMembership(summary?["membershipType"] as? String)
+    }
 
     /// Badge / display plan. Prefer org billing membership over GetPlanInfo when it still says Pro.
     static func resolvedPlanName(planInfoName: String?, membershipType: String?) -> String? {

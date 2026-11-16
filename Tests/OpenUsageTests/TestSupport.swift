@@ -1,21 +1,9 @@
-import Foundation
+import AppKit
+import SwiftUI
+import Vision
 import XCTest
 import os
 @testable import OpenUsage
-
-final class FakeHTTPClient: HTTPClient, @unchecked Sendable {
-    var response: HTTPResponse
-    var requests: [HTTPRequest] = []
-
-    init(response: HTTPResponse) {
-        self.response = response
-    }
-
-    func send(_ request: HTTPRequest) async throws -> HTTPResponse {
-        requests.append(request)
-        return response
-    }
-}
 
 final class RoutingHTTPClient: HTTPClient, @unchecked Sendable {
     private let requestsLock = OSAllocatedUnfairLock(initialState: [HTTPRequest]())
@@ -29,6 +17,35 @@ final class RoutingHTTPClient: HTTPClient, @unchecked Sendable {
     func send(_ request: HTTPRequest) async throws -> HTTPResponse {
         requestsLock.withLock { $0.append(request) }
         return try await handler(request)
+    }
+}
+
+extension HTTPResponse {
+    static func json(_ text: String, status: Int = 200) -> HTTPResponse {
+        HTTPResponse(statusCode: status, headers: [:], body: Data(text.utf8))
+    }
+}
+
+/// Plays the browser's part of a loopback sign-in: calls the authorize URL's redirect with its state and a
+/// fake code, and returns the status the app's callback server answered with.
+func completeLoopbackCallback(_ authorizeURL: URL) async -> Int? {
+    guard
+        let items = URLComponents(url: authorizeURL, resolvingAgainstBaseURL: false)?.queryItems,
+        let redirect = items.first(where: { $0.name == "redirect_uri" })?.value,
+        let state = items.first(where: { $0.name == "state" })?.value,
+        var callback = URLComponents(string: redirect)
+    else { return nil }
+    callback.host = "127.0.0.1"
+    callback.queryItems = [
+        URLQueryItem(name: "code", value: "fake-authorization-code"),
+        URLQueryItem(name: "state", value: state)
+    ]
+    guard let url = callback.url else { return nil }
+    do {
+        let (_, response) = try await URLSession.shared.data(from: url)
+        return (response as? HTTPURLResponse)?.statusCode
+    } catch {
+        return nil
     }
 }
 
@@ -150,7 +167,9 @@ extension WidgetDataStore {
         cache: ProviderSnapshotCache? = nil,
         defaults: UserDefaults,
         now: @escaping () -> Date = Date.init,
-        providerRefreshTimeout: TimeInterval = WidgetDataStore.defaultProviderRefreshTimeout
+        providerRefreshTimeout: TimeInterval = WidgetDataStore.defaultProviderRefreshTimeout,
+        // None by default: their waits are real time and would outlive the test, so an offline failure counts at once.
+        offlineRetryDelays: [TimeInterval] = []
     ) -> WidgetDataStore {
         WidgetDataStore(
             registry: registry ?? .from(runtimes),
@@ -158,38 +177,154 @@ extension WidgetDataStore {
             cache: cache ?? ProviderSnapshotCache(userDefaults: defaults, storageKey: "snapshots"),
             defaults: defaults,
             now: now,
-            providerRefreshTimeout: providerRefreshTimeout
+            providerRefreshTimeout: providerRefreshTimeout,
+            offlineRetryDelays: offlineRetryDelays
         )
     }
 }
 
+final class InMemoryHubKeyVault: HubKeyVault, @unchecked Sendable {
+    private let keys = OSAllocatedUnfairLock(initialState: [UUID: HubKey]())
+
+    func load(_ hubID: UUID) throws -> HubKey? { keys.withLock { $0[hubID] } }
+    func save(_ key: HubKey, for hubID: UUID) throws { keys.withLock { $0[hubID] = key } }
+    func delete(_ hubID: UUID) throws { keys.withLock { $0[hubID] = nil } }
+}
+
 final class InMemoryCredentialVault: CredentialVault, @unchecked Sendable {
-    private let lock = NSLock()
-    private var credentials: [UUID: AccountCredential] = [:]
+    private let credentials = OSAllocatedUnfairLock(initialState: [UUID: AccountCredential]())
+
+    func load(_ id: UUID) throws -> AccountCredential? { credentials.withLock { $0[id] } }
+    func save(_ credential: AccountCredential, for id: UUID) throws { credentials.withLock { $0[id] = credential } }
+    func delete(_ id: UUID) throws { credentials.withLock { $0[id] = nil } }
+
+    func update(_ credential: AccountCredential, for id: UUID) throws {
+        try credentials.withLock {
+            guard $0[id] != nil else { throw CredentialVaultError.missingCredential }
+            $0[id] = credential
+        }
+    }
+}
+
+final class FailingVault: CredentialVault, @unchecked Sendable {
+    let loadError = TestSwitch<(any Error)?>(nil)
+    let saveError = TestSwitch<(any Error)?>(nil)
+    let updateError = TestSwitch<(any Error)?>(nil)
+    let deleteError = TestSwitch<(any Error)?>(nil)
+    private let stored = InMemoryCredentialVault()
 
     func load(_ id: UUID) throws -> AccountCredential? {
-        lock.lock()
-        defer { lock.unlock() }
-        return credentials[id]
+        if let error = loadError.value { throw error }
+        return try stored.load(id)
     }
 
     func save(_ credential: AccountCredential, for id: UUID) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        credentials[id] = credential
+        if let error = saveError.value { throw error }
+        try stored.save(credential, for: id)
     }
 
     func update(_ credential: AccountCredential, for id: UUID) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        guard credentials[id] != nil else { throw CredentialVaultError.missingCredential }
-        credentials[id] = credential
+        if let error = updateError.value { throw error }
+        try stored.update(credential, for: id)
     }
 
     func delete(_ id: UUID) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        credentials.removeValue(forKey: id)
+        if let error = deleteError.value { throw error }
+        try stored.delete(id)
+    }
+}
+
+/// A stored account list with a Claude account and an entry of a kind this build does not have, with a
+/// field this build does not know, as a build with another provider would save it.
+enum StoredAccountList {
+    static let claude = Account(
+        id: UUID(uuidString: "8AD3B217-0000-4000-8000-000000000000")!,
+        kind: .claude,
+        label: "Work",
+        addedAt: Date(timeIntervalSinceReferenceDate: 0)
+    )
+    static let futureEntry = #"{"id":"F00DF00D-0000-4000-8000-000000000000","kind":"future-provider","label":"Future","seats":[{"id":1}],"addedAt":1}"#
+    static let data = Data((#"[{"id":"8AD3B217-0000-4000-8000-000000000000","kind":"claude","label":"Work","addedAt":0},"# + futureEntry + "]").utf8)
+}
+
+@MainActor
+func scrollViews(in view: NSView) -> [NSScrollView] {
+    [view as? NSScrollView].compactMap { $0 } + view.subviews.flatMap(scrollViews)
+}
+
+struct HostedPopover {
+    let panel: QuietMenuBarPanel
+    let host: NSView
+    let popover: PopoverState
+    let defaults: UserDefaults
+    let dataStore: WidgetDataStore
+
+    @MainActor
+    func open() {
+        popover.show(dashboardTab: .preferred(in: defaults))
+        host.layoutSubtreeIfNeeded()
+    }
+}
+
+extension QuietWindowTestCase {
+    /// The popover as `StatusItemController` hosts it, on its dashboard, one Claude account of two rows
+    /// per label, in an offscreen panel. Motion is on whatever the Mac's Reduce Motion setting (the CI
+    /// runner image turns it on), since the tests watch the slide and the morph. The caller installs a
+    /// height bridge on `MenuBarPopover`, cleared when the test ends, and then calls `open()`.
+    func hostPopover(accounts labels: [String]) async throws -> HostedPopover {
+        let defaults = isolatedDefaults()
+        let store = AccountStore(defaults: defaults, vault: InMemoryCredentialVault())
+        let container = AppContainer.forTesting(accounts: store, defaults: defaults)
+        let ids = labels.map { store.add(kind: .claude, label: $0, credential: .apiKey("key")).cardID }
+        for _ in 0..<400 where container.layout.displayGroups.count < ids.count { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(container.layout.displayGroups.count, ids.count, "the accounts never reached the dashboard")
+        for id in ids {
+            container.dataStore.snapshots[id] = ProviderSnapshot(
+                providerID: id, displayName: "Claude", plan: "Ultra",
+                lines: ["Session", "Weekly"].map {
+                    .progress(label: $0, used: 30, limit: 100, format: .percent, resetsAt: Date().addingTimeInterval(3600), periodDurationMs: 5 * 3_600_000)
+                }
+            )
+        }
+        defaults.set(DashboardTab.allUsage.rawValue, forKey: DashboardTab.defaultKey)
+        let hosting = NSHostingView(rootView: AnyView(
+            DashboardView()
+                .defaultAppStorage(defaults)
+                .environment(\.reduceAnimations, false)
+                .environment(container)
+                .environment(container.layout)
+                .environment(container.popover)
+                .environment(container.dataStore)
+                .environment(container.renaming)
+                .environment(UpdaterController())
+                .environment(\.colorScheme, .light)
+        ))
+        let panel = QuietMenuBarPanel(contentRect: NSRect(x: 0, y: 0, width: PanelMetrics.width, height: PanelHeightController.defaultHeight))
+        panel.appearance = NSAppearance(named: .aqua)
+        panel.host(hosting)
+        addTeardownBlock {
+            MenuBarPopover.applyHeight = nil
+            MenuBarPopover.clampHeight = nil
+        }
+        QuietTestProcess.show(panel, in: self)
+        return HostedPopover(panel: panel, host: hosting, popover: container.popover, defaults: defaults, dataStore: container.dataStore)
+    }
+}
+
+/// The lines Vision reads in an image. Accurate recognition throws `nilError` on a virtual Mac, such
+/// as an Amp Mac satellite, so there the tests read with fast recognition instead.
+func recognizedLines(in image: CGImage, usesLanguageCorrection: Bool = true) throws -> [String] {
+    func read(_ level: VNRequestTextRecognitionLevel) throws -> [String] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = level
+        request.usesLanguageCorrection = usesLanguageCorrection
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+    }
+    do {
+        return try read(.accurate)
+    } catch {
+        return try read(.fast)
     }
 }
 
@@ -200,5 +335,32 @@ extension XCTestCase {
         defaults.removePersistentDomain(forName: suite)
         addTeardownBlock { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         return defaults
+    }
+}
+
+/// A response the test holds open until it calls `release()`.
+actor HeldResponse {
+    private var released = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+    private var arrived = false
+    private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func hold() async {
+        arrived = true
+        for waiter in arrivalWaiters { waiter.resume() }
+        arrivalWaiters = []
+        guard !released else { return }
+        await withCheckedContinuation { held.append($0) }
+    }
+
+    func waitUntilHeld() async {
+        guard !arrived else { return }
+        await withCheckedContinuation { arrivalWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        for continuation in held { continuation.resume() }
+        held = []
     }
 }
