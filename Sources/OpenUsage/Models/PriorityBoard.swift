@@ -140,6 +140,9 @@ struct PriorityBoard {
     let usedUp: [PriorityItem]
     /// Limits with over half left that reset within a day, soonest reset first. In the menu bar only with Always Show In Menu Bar on.
     let useItOrLoseIt: [PriorityItem]
+    /// Every metric with a reading, in dashboard order, pinned or not. The fork's Always Show In Menu Bar
+    /// fills the strip with these, so healthy limits appear too instead of only the Priority tab's sections.
+    let everyMetric: [(provider: Provider, line: DashboardLine)]
     let notices: [AccountNotice]
     /// Accounts with no first reading yet, in dashboard order. Each shows as a skeleton row under the rest.
     let waiting: [Provider]
@@ -206,6 +209,8 @@ struct PriorityBoard {
             attention: runningOut.filter { !$0.isPinned },
             usedUp: ranked.filter { $0.reason.section == .usedUp },
             useItOrLoseIt: ranked.filter { $0.reason.section == .useItOrLoseIt && !$0.isPinned },
+            everyMetric: lines.filter { $0.1.descriptor.historyRow == nil && $0.1.data.hasData }
+                .map { (provider: $0.0, line: $0.1) },
             notices: notices, waiting: waiting, summary: summary,
             showsClearRow: !awaitingUsage && notices.isEmpty && runningOut.isEmpty
         )

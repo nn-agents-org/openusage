@@ -114,10 +114,50 @@ final class MenuBarContentTests: XCTestCase {
         let board = PriorityBoard.make(accounts: accounts, pinned: ["claude@1.Weekly", "codex@1.Session"], now: now)
 
         let strip = MenuBarContentBuilder.build(board: board, limit: .upToThree, alwaysShows: true)
-        XCTAssertEqual(strip.items.map(\.id), ["claude@1.Weekly", "codex@1.Session"])
-        XCTAssertEqual(strip.items.map(\.value), ["40%", "20%"])
+        XCTAssertEqual(strip.items.map(\.id), ["claude@1.Weekly", "codex@1.Session", "claude@1.Session"],
+                       "pinned first, then every healthy metric in dashboard order")
+        XCTAssertEqual(strip.items.map(\.value), ["40%", "20%", "10%"])
         XCTAssertEqual(strip.overflow, 0)
         XCTAssertEqual(MenuBarContentBuilder.build(board: board, limit: .upToThree), MenuBarContent(items: []), "off, pins stay out")
+    }
+
+    func testAlwaysShowingListsHealthyMetricsWithoutAnythingPinned() {
+        let accounts = [account(personal, limit("Session", used: 10), limit("Weekly", used: 40)),
+                        account(chatGPT, limit("Session", used: 20))]
+        let board = PriorityBoard.make(accounts: accounts, now: now)
+
+        let strip = MenuBarContentBuilder.build(board: board, limit: .upToTwo, alwaysShows: true)
+        XCTAssertEqual(strip.items.map(\.id), ["claude@1.Session", "claude@1.Weekly"], "every metric with a reading, dashboard order")
+        XCTAssertEqual(strip.overflow, 1, "the third healthy metric waits")
+        XCTAssertNotNil(MenuBarStripRenderer.image(for: strip), "the strip renders instead of falling back to the app icon")
+
+        XCTAssertEqual(MenuBarContentBuilder.build(board: board, limit: .upToTwo), MenuBarContent(items: []),
+                       "off, healthy metrics stay out")
+    }
+
+    func testAlwaysShowingPutsRunningOutBeforeHealthyMetrics() {
+        let accounts = [account(personal, limit("Quiet", used: 10), limit("Low", used: 95))]
+        let board = PriorityBoard.make(accounts: accounts, now: now)
+
+        let strip = MenuBarContentBuilder.build(board: board, limit: .upToTwo, alwaysShows: true)
+        XCTAssertEqual(strip.items.map(\.shortLabel), ["Low", "Quiet"], "Running Out first, then the healthy fill")
+        XCTAssertEqual(strip.overflow, 0)
+    }
+
+    func testAlwaysShowingSkipsMetricsWithoutAReadingAndHistoryRows() {
+        var waiting = limit("Weekly", used: 0)
+        waiting.hasData = false
+        var history = limit("Today", used: 5)
+        history.hasData = true
+        let historyDescriptor = WidgetDescriptor.history(key: "today", provider: personal, .window(.today, .tokens))
+        let lines = [
+            DashboardLine(descriptor: WidgetDescriptor(provider: personal, key: "Weekly", metricLabel: "Weekly", sample: waiting), data: waiting),
+            DashboardLine(descriptor: historyDescriptor, data: history),
+        ]
+        let board = PriorityBoard.make(accounts: [DashboardAccount(provider: personal, lines: lines)], now: now)
+
+        XCTAssertEqual(MenuBarContentBuilder.build(board: board, limit: .upToThree, alwaysShows: true).items.map(\.id),
+                       [], "no reading and history rows never fill the strip")
     }
 
     func testAPinnedMetricWithoutALimitShowsItsAmount() {

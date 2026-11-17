@@ -87,6 +87,17 @@
 
 ---
 
+### Требование 5: Always Show In Menu Bar показывает все метрики с данными
+- **Проблема:** В upstream режим «Always Show In Menu Bar» лишь отражает вкладку Priority (Pinned, Running Out, Use It or Lose It, Used Up). Если аккаунты здоровы и ничего не закреплено, строка меню пуста и остается только иконка приложения — пользователь ожидает увидеть свои метрики.
+- **Бизнес-логика:**
+  - При включенном «Always Show In Menu Bar» после секций Priority (в их порядке) строка меню дополняется всеми остальными метриками с данными в порядке дашборда (`PriorityBoard.everyMetric`).
+  - Метрики без показаний (`hasData == false`) и строки истории (Today/Yesterday/Last 30 days) в заполнение не попадают.
+  - Переполнение (`+N`) учитывает ожидающие метрики заполнения; Used Up по-прежнему не считается.
+  - При выключенной настройке поведение upstream не меняется: только то, что running out.
+- **Точка интеграции:** `MenuBarContent.swift` (`MenuBarContentBuilder.build`), `PriorityBoard.swift` (`everyMetric`).
+
+---
+
 ## 5. Затронутые файлы исходного кода
 
 | Файл | Внесенные изменения |
@@ -96,6 +107,8 @@
 | `Sources/OpenUsage/Models/WidgetData.swift` | В `menuBarResetText` добавлен учет `!isFreshSessionWindow`. В `isFreshSessionWindow` для `.zeroUsage` снята блокировка по `now < resetsAt`. |
 | `Sources/OpenUsage/Providers/AccountProviderRuntime+Descriptors.swift` | Добавлен `sessionStartSignal = .zeroUsage` для сессионных метрик Codex (`session`, `spark`). |
 | `Sources/OpenUsage/Providers/OpenCode/OpenCodeUsageMapper.swift` | Сброс `resetsAt = nil` при `used == 0` и `reportedReset <= capturedAt`. |
+| `Sources/OpenUsage/Models/PriorityBoard.swift` | Новое поле `everyMetric`: все метрики с показаниями в порядке дашборда (без строк истории) для заполнения строки меню. |
+| `Sources/OpenUsage/Models/MenuBarContent.swift` | При `alwaysShows` после секций Priority строка дополняется здоровыми метриками. |
 | `update-upstream.sh` | Вспомогательный shell-скрипт для синхронизации локального форка с апстримом. |
 
 ---

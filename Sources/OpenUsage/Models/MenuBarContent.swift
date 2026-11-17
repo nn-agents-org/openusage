@@ -28,13 +28,18 @@ struct MenuBarContent: Equatable {
 enum MenuBarContentBuilder {
     private static let genericWords: Set<String> = ["models", "bot", "usage"]
 
-    /// Only what's running out, or with `alwaysShows` every section of the Priority tab in its order, top to bottom.
+    /// Only what's running out, or with `alwaysShows` every section of the Priority tab in its order, top to bottom,
+    /// then every metric with a reading in dashboard order — the fork's Always Show lists healthy limits too.
     static func build(board: PriorityBoard, limit: MenuBarLimit, alwaysShows: Bool = false) -> MenuBarContent {
         guard limit != .iconOnly else { return MenuBarContent(items: []) }
-        let counted = alwaysShows
+        var counted = alwaysShows
             ? board.pinned.map { ($0.provider, $0.line) } + (board.attention + board.useItOrLoseIt).map { ($0.provider, $0.line) }
             : board.runningOut.map { ($0.provider, $0.line) }
         let usedUp = alwaysShows ? board.usedUp.map { ($0.provider, $0.line) } : []
+        if alwaysShows {
+            let listed = Set(counted.map { $0.1.id } + usedUp.map { $0.1.id })
+            counted += board.everyMetric.filter { !listed.contains($0.1.id) }.map { ($0.provider, $0.line) }
+        }
         let shown = (counted + usedUp).prefix(limit.count).map { provider, line in
             let label = line.data.title
             return MenuBarContent.Item(
