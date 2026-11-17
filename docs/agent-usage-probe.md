@@ -1,9 +1,10 @@
 # Agent Usage Probe
 
-A Linux-side helper that reports remaining AI provider limits as JSON, so containerised
-agents can pick an executor by available quota. It is a port of the *network* part of
-OpenUsage's providers (see `Sources/OpenUsage/Providers/...`); OpenUsage's own
-`openusage` CLI is macOS-only and only reads the app cache.
+A helper that reports remaining AI provider limits as JSON, so containerised agents can pick an
+executor by available quota. Runs on Linux (container) and macOS (reads the agents' own config files,
+and Claude's Keychain item). It is a port of the *network* part of OpenUsage's providers (see
+`Sources/OpenUsage/Providers/...`); OpenUsage's own `openusage` CLI is macOS-only and only reads the
+app cache.
 
 ## Output
 
@@ -40,6 +41,20 @@ Sorted by `limit_left` descending.
 | Claude | `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`) or `CLAUDE_ACCESS_TOKEN` | `GET https://api.anthropic.com/api/oauth/usage` | Headers include `anthropic-beta: oauth-2025-04-20`, `User-Agent: claude-cli/2.1.294 (external, cli)`. Refresh via `https://platform.claude.com/v1/oauth/token` (client id `9d1c250a-e61b-44d9-88ed-5944d1962f5e`). `utilization` is 0-100. Entries: `claude` (five_hour), `claude-sonnet`, scoped `limits` (e.g. fable). |
 | Antigravity | `~/.gemini/antigravity-cli/antigravity-oauth-token`, `~/.antigravity/auth.json` or `ANTIGRAVITY_ACCESS_TOKEN` | `POST …/v1internal:retrieveUserQuotaSummary` on `daily-cloudcode-pa.googleapis.com` first, then `cloudcode-pa.googleapis.com` | Bearer token; refresh via `https://oauth2.googleapis.com/token` (client id/secret from `BrowserProviderLogins`). `remainingFraction` is 0-1. User-Agent must be the hub client identity (`antigravity/hub/2.24.0 (aidev_client; …)`); the IDE identity omits the Argon quota. Production can return untouched Gemini windows, so daily is read first and production only fills missing buckets (first-wins pooling). Entries: `gemini`, `gemini-weekly`, `claude`, `claude-weekly` (3p models), `gemini-argon` (the separate weekly Argon quota), plus one entry per unknown bucket id — so new model quotas (e.g. Hydrogen) surface without a script change. |
 | OpenCode Go | `OPENCODE_API_KEY` or `~/.local/share/opencode/auth.json` | `GET https://opencode.ai/zen/go/v1/usage` | Bearer token. `percent` is 0-100; `resetsAt` ISO8601. Entry: `opencode-go` (rolling). |
+
+## Auth sources per platform
+
+The probe reads each agent's own config, with env overrides (`*_ACCESS_TOKEN` / `*_AUTH_FILE`) taking
+precedence. Linux paths come first, then macOS:
+
+- **Codex:** `~/.codex/auth.json`, `~/.config/codex/auth.json`, `~/Library/Application Support/Codex/auth.json`, `~/Library/Application Support/com.openai.codex/auth.json`.
+- **Claude:** `~/.claude/.credentials.json`, `~/.claude/credentials.json`, `~/.config/claude/credentials.json`, `~/Library/Application Support/Claude/credentials.json`; on macOS also the Keychain via `security find-generic-password -s <svc> -w` for services `Claude Code-credentials`, `Claude Code`, `claude-code` (the item holds the same `claudeAiOauth` JSON).
+- **Antigravity:** `~/.gemini/antigravity-cli/antigravity-oauth-token` (plain token or `access_token\nrefresh_token`), `~/.gemini/jetski-standalone-oauth-token`, `~/.gemini/antigravity-oauth-token`, `~/.gemini/antigravity/antigravity-oauth-token`, `~/.antigravity/auth.json`, `~/.config/antigravity/{auth,credentials}.json`, `~/Library/Application Support/Antigravity{, IDE}/{auth,credentials}.json`.
+- **OpenCode:** `~/.local/share/opencode/auth.json`, `~/.config/opencode/auth.json`, `~/.opencode/auth.json`, `~/Library/Application Support/opencode/auth.json`, or an `.env` file with `API_KEY`/`TOKEN`.
+
+Refreshed access tokens are written back to the file they came from (never to a Keychain item). When
+Claude's token can't be found or refreshed at all, the probe falls back to Claude Code's cached
+utilization in `~/.claude.json` (`cachedUsageUtilization`).
 
 ## Re-creating the probe
 
